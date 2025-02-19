@@ -1,50 +1,53 @@
-# Fetch -- efficient tree search for LLM reasoning
+# Fetch -- Efficient Tree Search for LLM Reasoning
 
-Code for paper "Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls"
+Code for the paper [Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls](https://arxiv.org/abs/2502.11183)
 
-## Setup
+---
 
-Follow the steps below to run our scripts:
+## 🚀 Setup
 
-### Step 1. Setup service of policy, verifier, and embedding model
+Follow the steps below to run our scripts smoothly:
 
-#### Policy
+### 📌 Step 1. Setup service of policy, verifier, and embedding model
 
-For policy, we employ vllm. First, start the policy service by running the following command:
+#### 📚 Policy
 
+We employ [vllm](https://docs.vllm.ai/en/latest/) for the policy. To start the policy service, run the following command:
 ```
 python3 -m vllm.entrypoints.openai.api_server --model /path/to/policy/model --port 8000 --dtype float16 --tensor-parallel-size 2 --swap-space 8 --max-model-len 4096
 ```
 
-Replace `/path/to/policy/model` with the actual path to your policy model.
+#### 🔍 Verifier
 
-#### Verifier
+1. Update your model path in `verifier/server.py`.
+2. Run the script: `bash run.sh ./ 0` inside the `verifier` directory.
 
-For verifier, first update your model path in `verifier/server.py`. Then run the script `bash run.sh ./ 0` under `verifier`.
+#### 📦 Embedding Model
 
-#### Embedding Model
+If you're using state merging, follow these steps:
+1. Update the path in `cluster/server_cluster.py`.
+2. Run the script: `bash run_app.sh ./ 0` inside the `cluster` directory.
 
-If state merging is used, please update the path in `cluster/server_cluster.py`, then run the script `bash run_app.sh ./ 0` under `cluster`.
+---
 
-### Step 2. Run tree search algorithms
+## 🎯 Tips
 
-We provide bfs, beamsearch, and mcts. Update the scripts (e.g., input and output file path) then just run (e.g., `python3 beamsearch.py`).
+- **Using Your Own Models**: If you prefer to use your own policy or verifier, please pay attention to the prompts fed to the models and the separator (e.g., "\n") to split steps.
+- **Embedding Model Preparation**: Preparing an embedding model can improve performance. We provide scripts to train these models. You can also use pretrained SimCSE or other embedding models available on [Hugging Face Hub](https://huggingface.co/models).
+- **Pre-trained Models**: If you don't want to train models, our trained models are available on HuggingFace Hub:
+  - Policy: [`xmu-nlp/Llama-3-8b-gsm8k`](https://huggingface.co/xmu-nlp/Llama-3-8b-gsm8k)
+  - Verifier: [`xmu-nlp/Llama-3-8b-gsm8k-value-A`](https://huggingface.co/xmu-nlp/Llama-3-8b-gsm8k-value-A) and [`xmu-nlp/Llama-3-8b-gsm8k-value-B`](https://huggingface.co/xmu-nlp/Llama-3-8b-gsm8k-value-B)
+  - Emb: [`xmu-nlp/simcse-large-gsm8k`](https://huggingface.co/xmu-nlp/simcse-large-gsm8k)
 
-## Tips
+---
 
-- If you want to use your own policy or verifier, please notice the prompt fed to the models and the separator (e.g., "\n") to split steps.
-- The embedding model can be prepared for better performance. We have provided the scripts to train these models. Using pretrained SimCSE or other embedding models also work. You can find many available models on huggingface hub.
-- If you do not want to prepare these models, our trained models are available on huggingface hub:
-  - Policy: xmu-nlp/Llama-3-8b-gsm8k
-  - Verifier: xmu-nlp/Llama-3-8b-gsm8k-value-A and xmu-nlp/Llama-3-8b-gsm8k-value-B
-  - Emb: xmu-nlp/simcse-large-gsm8k
-
-## Citation
+## 📝 Citation
 
 If you find our work useful, please cite our paper:
+
 ```
 @misc{wang2025dontlosttreesstreamlining,
-      title={Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls}, 
+      title={Don't GetLost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls}, 
       author={Ante Wang and Linfeng Song and Ye Tian and Dian Yu and Haitao Mi and Xiangyu Duan and Zhaopeng Tu and Jinsong Su and Dong Yu},
       year={2025},
       eprint={2502.11183},
