@@ -32,7 +32,7 @@ If you're using state merging, follow these steps:
 
 ### 📌 Step 2. Run tree search algorithms
 
-We provide three tree search algorithms: **BFS (Breadth-First Search)**, **Beam Search**, and **MCTS (Monte Carlo Tree Search)**.
+We provide three tree search algorithms: **BFS (Best-First Search)**, **Beam Search**, and **MCTS (Monte Carlo Tree Search)**.
 
 1. Specify the input, output file paths, and other parameters in scripts such as `beamsearch.py`.
 
