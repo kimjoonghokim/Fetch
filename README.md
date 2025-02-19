@@ -1,4 +1,4 @@
-# Fetch -- Efficient Tree Search for LLM Reasoning
+# Fetch — Efficient Tree Search for LLM Reasoning
 
 Code for the paper [Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls](https://arxiv.org/abs/2502.11183)
 
@@ -6,7 +6,7 @@ Code for the paper [Don't Get Lost in the Trees: Streamlining LLM Reasoning by O
 
 ## 🚀 Setup
 
-Follow the steps below to run our scripts smoothly:
+Follow the steps below to run our scripts:
 
 ### 📌 Step 1. Setup service of policy, verifier, and embedding model
 
@@ -27,6 +27,16 @@ python3 -m vllm.entrypoints.openai.api_server --model /path/to/policy/model --po
 If you're using state merging, follow these steps:
 1. Update the path in `cluster/server_cluster.py`.
 2. Run the script: `bash run_app.sh ./ 0` inside the `cluster` directory.
+
+---
+
+### 📌 Step 2. Run tree search algorithms
+
+We provide three tree search algorithms: **BFS (Breadth-First Search)**, **Beam Search**, and **MCTS (Monte Carlo Tree Search)**.
+
+1. Specify the input, output file paths, and other parameters in scripts such as `beamsearch.py`.
+
+2. Simply execute the corresponding Python script. For instance, to run Beam Search: `python3 beamsearch.py`
 
 ---
 
