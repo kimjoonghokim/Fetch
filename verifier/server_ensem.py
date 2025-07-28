@@ -8,8 +8,8 @@ from transformers import AutoConfig, AutoTokenizer, LlamaForTokenClassification
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-model_name_or_path = ["/path/to/model/1",
-                      "/path/to/model/2"]
+model_name_or_path = ["xmu-nlp/Llama-3-8b-gsm8k-value-A",
+                      "xmu-nlp/Llama-3-8b-gsm8k-value-B"]
 
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path[0], use_fast=True)
 print("Tokenizer loaded successfully.")
