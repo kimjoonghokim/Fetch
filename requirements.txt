@@ -1,0 +1,26 @@
+# Web server / API
+fastapi>=0.75.0        # high-performance API framework :contentReference[oaicite:0]{index=0}
+uvicorn[standard]>=0.17.0
+
+# LLM serving & inference
+vllm>=0.10.0           # high-throughput LLM inference engine :contentReference[oaicite:1]{index=1}
+transformers>=4.30.0
+torch>=2.0.0
+
+# Embeddings / similarity
+sentence-transformers>=2.2.0
+
+# Data handling & utils
+numpy>=1.23.0
+pandas>=2.0.0
+tqdm>=4.65.0
+requests>=2.28.0
+
+
+# Search & evaluation
+scikit-learn>=1.2.0
+datasets>=2.10.0       # if you use Hugging Face datasets for loading GSM8K/etc.
+
+# Other
+ray>=2.7.0
+accelerate>=1.9.0
