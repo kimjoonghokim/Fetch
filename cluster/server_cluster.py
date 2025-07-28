@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 from sklearn.cluster import AgglomerativeClustering
 
-model_fpath = "path/to/merge/data"
+model_fpath = "xmu-nlp/simcse-large-gsm8k"
 tokenizer = AutoTokenizer.from_pretrained(model_fpath)
 model = AutoModel.from_pretrained(model_fpath).cuda()
 max_seq_length = 256
