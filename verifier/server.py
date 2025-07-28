@@ -6,7 +6,7 @@ from typing import List
 import torch
 from transformers import AutoConfig, AutoTokenizer, LlamaForTokenClassification
 
-model_name_or_path = "/path/to/model"
+model_name_or_path = "xmu-nlp/Llama-3-8b-gsm8k-value-A"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True)
 print("Tokenizer loaded successfully.")
