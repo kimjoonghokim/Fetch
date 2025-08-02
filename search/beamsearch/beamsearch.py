@@ -10,9 +10,9 @@ LIMIT=50
 BUDGET=5
 BEAM=5
 TEMPERATURE=0.8
-data_fpath = "gsm8k/test.jsonl" # path to the test set
+data_fpath = "../../dataset/toy.jsonl" # path to the test set
 output_fpath = f"test_gsm8k_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
-policy_fpath = "path/to/llama/ckpt" # path to the policy model
+policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the policy model
 
 # task dependent
 def assert_end(text):
