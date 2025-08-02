@@ -32,7 +32,7 @@ SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 CONTINUE = False
-data_fpath = "gsm8k/test.jsonl" # path to the test set
+data_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the test set
 output_fpath = f"test_gsm8k_bfs_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
 policy_fpath = "path/to/llama/ckpt" # path to the policy model
 
