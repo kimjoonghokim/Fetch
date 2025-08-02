@@ -11,7 +11,7 @@ import copy
 class PolicyArgument:
     url='127.0.0.1'
     port=8000
-    model_name="path/to/policy"
+    model_name="xmu-nlp/Llama-3-8b-gsm8k"
     max_tokens=512
 
 class ValueArgument:
