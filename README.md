@@ -14,7 +14,6 @@ Follow the steps below to run our scripts:
 
 We employ [vllm](https://docs.vllm.ai/en/latest/) for the policy. To start the policy service, run the following command:
 ```
-#We are using xmu-nlp/Llama-3-8b-gsm8k as our model for the time being
 python3 -m vllm.entrypoints.openai.api_server --model xmu-nlp/Llama-3-8b-gsm8k --port 8000 --dtype float16 --tensor-parallel-size 2 --swap-space 8 --max-model-len 4096
 ```
 
