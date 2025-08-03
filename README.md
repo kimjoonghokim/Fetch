@@ -14,19 +14,20 @@ Follow the steps below to run our scripts:
 
 We employ [vllm](https://docs.vllm.ai/en/latest/) for the policy. To start the policy service, run the following command:
 ```
-python3 -m vllm.entrypoints.openai.api_server --model /path/to/policy/model --port 8000 --dtype float16 --tensor-parallel-size 2 --swap-space 8 --max-model-len 4096
+#We are using xmu-nlp/Llama-3-8b-gsm8k as our model for the time being
+python3 -m vllm.entrypoints.openai.api_server --model xmu-nlp/Llama-3-8b-gsm8k --port 8000 --dtype float16 --tensor-parallel-size 2 --swap-space 8 --max-model-len 4096
 ```
 
 #### 🔍 Verifier
 
 1. Update your model path in `verifier/server.py`.
-2. Run the script: `bash run.sh ./ 0` inside the `verifier` directory.
+2. Run the script: `bash run.sh ./ 0` inside the `verifier` directory. Replace `0` with the GPU number you want to use
 
 #### 📦 Embedding Model
 
 If you're using state merging, follow these steps:
 1. Update the path in `cluster/server_cluster.py`.
-2. Run the script: `bash run_app.sh ./ 0` inside the `cluster` directory.
+2. Run the script: `bash run_app.sh ./ 0` inside the `cluster` directory. Replace `0` with the GPU number you want to use
 
 ---
 
