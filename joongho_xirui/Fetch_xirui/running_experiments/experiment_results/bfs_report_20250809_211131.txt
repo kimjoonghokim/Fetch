@@ -1,0 +1,66 @@
+🧪 BFS EXPERIMENT REPORT
+==================================================
+Generated: 2025-08-09 21:11:31
+Algorithm: BFS
+Dataset: ../dataset/toy.jsonl
+Total Problems Tested: 5
+
+📊 STATISTICS:
+   Average Value: 1.0000
+   Average Time: 2.73s
+   Average Depth: 5.0
+   Best Value: 1.0000
+   Worst Value: 1.0000
+
+📋 DETAILED RESULTS:
+------------------------------
+Problem 1:
+  Question: Janet’s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for ...
+  Best Path: She eats 3 eggs and bakes 4 muffins a day so she uses 3+4 =7 eggs
+Her ducks lay 16 eggs a day and she uses 7 for breakfast and muffins so there are 16-7 = 9 eggs left
+She sells 9 eggs every day for $2...
+  Value: 1.0000
+  Depth: 5
+  Time: 3.60s
+  Parameters: {'max_depth': 5, 'max_budget': 10, 'temperature': 0.8}
+
+Problem 2:
+  Question: A robe takes 2 bolts of blue fiber and half that much white fiber.  How many bolts in total does it ...
+  Best Path: It takes 2/2=1 bolt of white fiber.
+So in total it takes 2+1=3 bolts of fiber.
+The answer is 3...
+  Value: 1.0000
+  Depth: 5
+  Time: 1.75s
+  Parameters: {'max_depth': 5, 'max_budget': 10, 'temperature': 0.8}
+
+Problem 3:
+  Question: Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repai...
+  Best Path: The repairs added 50000*.15=$7500
+So the value of the house increased to 80000+7500=$89500
+So he made a profit of 89500-80000=$9500
+The answer is 9500...
+  Value: 1.0000
+  Depth: 5
+  Time: 2.61s
+  Parameters: {'max_depth': 5, 'max_budget': 10, 'temperature': 0.8}
+
+Problem 4:
+  Question: James decides to run 3 sprints 3 times a week.  He runs 60 meters each sprint.  How many total meter...
+  Best Path: He runs 60*3=180 meters each time
+So he runs 180*3=540 meters per week
+The answer is 540...
+  Value: 1.0000
+  Depth: 5
+  Time: 1.66s
+  Parameters: {'max_depth': 5, 'max_budget': 10, 'temperature': 0.8}
+
+Problem 5:
+  Question: Every day, Wendi feeds each of her chickens three cups of mixed chicken feed, containing seeds, meal...
+  Best Path: Wendi feeds each chicken 3 cups of feed throughout the day, so she uses 3 cups/chicken * 20 chickens = 60 cups in total for the morning and afternoon meals combined.
+She has already given her chickens...
+  Value: 1.0000
+  Depth: 5
+  Time: 4.05s
+  Parameters: {'max_depth': 5, 'max_budget': 10, 'temperature': 0.8}
+
