@@ -1,0 +1,16 @@
+Tokenizer loaded successfully.
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.92it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00, 10.60it/s]
+Some parameters are on the meta device because they were offloaded to the cpu.
+INFO:     Started server process [9886]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+Value model loaded successfully.
+INFO:     127.0.0.1:52268 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52268 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+Length of tokenized sequences: 1
+INFO:     127.0.0.1:50670 - "POST /predict HTTP/1.1" 200 OK
+Length of tokenized sequences: 8
+INFO:     127.0.0.1:51754 - "POST /predict HTTP/1.1" 200 OK
+Length of tokenized sequences: 27
+INFO:     127.0.0.1:60384 - "POST /predict HTTP/1.1" 200 OK
