@@ -5,7 +5,7 @@ This directory contains a comprehensive scoring system for evaluating the confid
 ## 📁 Files Overview
 
 - **`scoring.py`** - Main scoring system with confidence calculation methods
-- **`demo.py`** - Interactive demonstration and testing script (create this file if missing)
+- **`demo.py`** - Interactive demonstration and testing script
 
 ## 🎯 What is Confidence Scoring?
 
@@ -41,6 +41,78 @@ Think of it like asking someone a math question:
 - **Use when**: You're doing technical analysis or comparing across different text lengths
 - **Example**: Perplexity of 1.2 (good) vs 5.8 (poor)
 
+## 🏆 Overall Scoring Methods
+
+The scoring system provides three different ways to get an overall score that combines multiple factors (currently just confidence, but designed for future expansion):
+
+### 1. `get_overall_score()` - 📊 Detailed Analysis
+- **Type**: Class method (requires `AnswerScorer` instance)
+- **Returns**: Large dictionary with complete breakdown
+- **Best for**: Debugging, analysis, understanding what's happening
+- **Performance**: Slower (more data processing)
+
+```python
+scorer = AnswerScorer()
+result = scorer.get_overall_score("What is 2+2?", "")
+
+# Returns detailed dictionary:
+{
+    'overall_score': 0.756,
+    'component_scores': {
+        'confidence': {'score': 0.756, 'details': {...}},
+        'parent_child_quality': {'score': 0.0, 'details': {...}},
+        # ... more components
+    },
+    'weights_used': {'confidence': 1.0},
+    'total_weight': 1.0,
+    'metadata': {...}
+}
+```
+
+### 2. `get_simple_overall_score()` - 🔢 Just the Number  
+- **Type**: Class method (requires `AnswerScorer` instance)
+- **Returns**: Single float (0-1)
+- **Best for**: When you already have a scorer instance but just need the final score
+- **Performance**: Fast
+
+```python
+scorer = AnswerScorer()
+score = scorer.get_simple_overall_score("What is 2+2?", "")
+# Returns: 0.756
+```
+
+### 3. `get_overall_answer_score()` - ⚡ One-Liner
+- **Type**: Standalone function (no class needed)
+- **Returns**: Single float (0-1)
+- **Best for**: Search algorithms, quick scoring, when you don't want to create instances
+- **Performance**: Fast
+
+```python
+from scorer.scoring import get_overall_answer_score
+
+score = get_overall_answer_score("What is 2+2?", "")
+# Returns: 0.756
+```
+
+### 🎯 Which One Should You Use?
+
+| Use Case | Recommended Method | Why? |
+|----------|-------------------|------|
+| **Search Algorithms** | `get_overall_answer_score()` | Simple one-liner, no instance needed |
+| **Tree Search (Beam, MCTS)** | `get_overall_answer_score()` | Fast, clean integration |
+| **Debugging/Analysis** | `get_overall_score()` | See all component scores and details |
+| **Batch Processing** | `get_overall_answer_score()` | Stateless, easy to parallelize |
+| **Research/Tuning** | `get_overall_score()` | Full visibility into scoring components |
+
+### 🔗 Method Relationship
+```
+get_overall_answer_score()  
+    ↓ creates AnswerScorer instance
+    ↓ calls get_simple_overall_score()
+        ↓ calls get_overall_score()
+        ↓ extracts just the 'overall_score' field
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -66,29 +138,42 @@ This will show you:
 - 📊 Detailed scoring with all metrics
 - 🪜 Step-by-step reasoning confidence
 - 🔄 Comparison of different scoring methods
+- 🏆 Overall scoring demonstrations
 
 ## 💻 Usage Examples
+
+### For Search Algorithms (Recommended)
+```python
+from scorer.scoring import get_overall_answer_score
+
+# In your beam search, MCTS, etc.
+score = get_overall_answer_score("What is 2+2?", "")
+print(f"Score: {score:.3f}")  # Score: 0.756
+
+# With custom weights (when more components are available)
+weights = {"confidence": 0.8, "length_penalty": 0.2}
+score = get_overall_answer_score("What is 2+2?", "", weights=weights)
+```
+
+### For Analysis and Debugging
+```python
+from scorer.scoring import AnswerScorer
+
+scorer = AnswerScorer()
+result = scorer.get_overall_score("What is 15*23?", "")
+
+print(f"Overall Score: {result['overall_score']:.3f}")
+print(f"Confidence: {result['component_scores']['confidence']['score']:.3f}")
+print(f"Generated Text: {result['component_scores']['confidence']['details']['text_generated']}")
+```
 
 ### Simple Confidence Check
 ```python
 from scorer.scoring import get_simple_confidence
 
-# Get a quick confidence score (0-1)
+# Get just confidence score (0-1)
 confidence = get_simple_confidence("What is 2+2?")
 print(f"Confidence: {confidence:.3f}")
-```
-
-### Detailed Analysis
-```python
-from scorer.scoring import AnswerScorer
-
-scorer = AnswerScorer()
-result = scorer.get_confidence_score("What is 15*23?", "")
-
-print(f"Answer: {result.text}")
-print(f"Average Confidence: {result.avg_confidence:.3f}")
-print(f"Minimum Confidence: {result.min_confidence:.3f}")
-print(f"Perplexity: {result.perplexity:.2f}")
 ```
 
 ### Step-by-Step Reasoning
@@ -97,24 +182,15 @@ print(f"Perplexity: {result.perplexity:.2f}")
 question = "What is 25*16?"
 context = "I need to multiply 25 by 16. Let me break this down:"
 
-result = scorer.get_confidence_score(question, context)
-print(f"With context confidence: {result.avg_confidence:.3f}")
+score = get_overall_answer_score(question, context)
+print(f"With context score: {score:.3f}")
 ```
 
-### Different Scoring Methods
+### Batch Processing
 ```python
-from scorer.scoring import ScoringMethod
-
-methods = [
-    ScoringMethod.CONFIDENCE_AVERAGE,
-    ScoringMethod.CONFIDENCE_MIN,
-    ScoringMethod.PERPLEXITY
-]
-
-for method in methods:
-    result = scorer.get_confidence_score("What is 7*9?", "", method=method)
-    score = scorer.get_primary_score(result, method)
-    print(f"{method.value}: {score:.3f}")
+questions = ["What is 1+1?", "What is 5*7?", "What is 100/4?"]
+scores = [get_overall_answer_score(q, "") for q in questions]
+print(f"Scores: {[f'{s:.3f}' for s in scores]}")
 ```
 
 ## 🔧 Configuration
@@ -138,24 +214,23 @@ scorer = AnswerScorer(config)
 
 ## 📊 Understanding Results
 
-### Good Confidence Scores
-- **Average confidence > 0.7**: Model is quite confident
-- **Minimum confidence > 0.5**: No major weak spots
-- **Perplexity < 2.0**: Model finds the answer predictable
+### Good Overall Scores
+- **Score > 0.7**: Model is quite confident overall
+- **Score > 0.5**: Acceptable confidence  
+- **Score > 0.3**: Lower confidence but potentially usable
 
-### Poor Confidence Scores
-- **Average confidence < 0.3**: Model is uncertain
-- **Minimum confidence < 0.1**: Contains very uncertain tokens
-- **Perplexity > 5.0**: Model finds the answer surprising/difficult
+### Poor Overall Scores
+- **Score < 0.3**: Model is uncertain
+- **Score < 0.1**: Very low confidence, likely unreliable
 
 ### Example Output
 ```
 📝 Question: What is 12*15?
-🤖 Generated Answer: 'The answer is 180.'
-📈 Average Confidence: 0.756
-⬇️  Minimum Confidence: 0.623
-📐 Geometric Confidence: 0.742
-🌀 Perplexity: 1.32
+🏆 Overall Score: 0.756
+
+📊 Component Breakdown:
+   • confidence: 0.756
+   • length_penalty: 1.000
 
 🔤 Token Details:
    'The' → 0.834
@@ -164,19 +239,6 @@ scorer = AnswerScorer(config)
    ' 180' → 0.812
    '.' → 0.891
 ```
-
-This README provides:
-
-1. **📁 Clear file overview** - What each file does
-2. **🎯 Confidence scoring explanation** - What it is and why it matters  
-3. **🧮 Method explanations** - Each scoring method explained in simple terms
-4. **🚀 Quick start guide** - How to get running immediately
-5. **💻 Usage examples** - Practical code examples
-6. **📊 Results interpretation** - How to understand the output
-7. **🔍 Troubleshooting** - Solutions to common problems
-8. **🧪 Testing section** - How to verify everything works
-
-The explanations assume no prior knowledge of confidence scoring while still being comprehensive enough for technical users!
 
 ## 🔍 Troubleshooting
 
@@ -204,15 +266,6 @@ url: str = "http://127.0.0.1"
 2. Verify your vLLM server supports logprobs
 3. Check server logs for errors
 
-## 🔮 Future Features
-
-The scoring system is designed to be extensible. Planned features include:
-
-- **Parent/Child Node Quality**: Score based on reasoning tree structure
-- **Semantic Similarity**: Compare answers to reference solutions
-- **Ensemble Voting**: Combine multiple scoring methods
-- **Custom Scoring Functions**: Add your own confidence metrics
-
 ## 🧪 Testing Your Setup
 
 Quick test to verify everything works:
@@ -220,23 +273,54 @@ Quick test to verify everything works:
 ```bash
 cd /workspace/Fetch
 python3 -c "
-from scorer.scoring import get_simple_confidence
+from scorer.scoring import get_overall_answer_score
 try:
-    score = get_simple_confidence('What is 1+1?')
-    print(f'✅ Success! Confidence: {score:.3f}')
+    score = get_overall_answer_score('What is 1+1?')
+    print(f'✅ Success! Overall Score: {score:.3f}')
 except Exception as e:
     print(f'❌ Error: {e}')
 "
 ```
 
-If you see a confidence score (like `0.756`), everything is working! 🎉
+## 🔮 Future Features
 
-## 📚 Learn More
+The scoring system is designed to be extensible. Planned features include:
 
-- **Log Probabilities**: The mathematical foundation of confidence scoring
-- **Token-level Analysis**: Understanding word-by-word confidence
-- **Perplexity**: A measure from information theory used in NLP
-- **vLLM Documentation**: [https://docs.vllm.ai/](https://docs.vllm.ai/)
+- **Parent/Child Node Quality**: Score based on reasoning tree structure
+- **Semantic Similarity**: Compare answers to reference solutions
+- **Coherence Scoring**: Evaluate logical flow and consistency
+- **Factual Consistency**: Check against knowledge bases
+- **Length Penalty**: Already implemented, can be enabled with weights
+- **Custom Scoring Functions**: Add your own confidence metrics
+
+## 📚 Integration Examples
+
+### Beam Search Integration
+```python
+from scorer.scoring import get_overall_answer_score
+
+def evaluate_beam_candidates(question, candidates):
+    scored_candidates = []
+    for candidate_path in candidates:
+        score = get_overall_answer_score(question, candidate_path)
+        scored_candidates.append((candidate_path, score))
+    return sorted(scored_candidates, key=lambda x: x[1], reverse=True)
+```
+
+### MCTS Integration
+```python
+from scorer.scoring import get_overall_answer_score
+
+class MCTSNode:
+    def __init__(self, question, path):
+        self.question = question
+        self.path = path
+        self.confidence_score = get_overall_answer_score(question, path)
+    
+    def get_value(self):
+        # Combine verifier score with confidence
+        return self.verifier_value * 0.7 + self.confidence_score * 0.3
+```
 
 ---
 

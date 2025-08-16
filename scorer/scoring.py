@@ -283,6 +283,184 @@ class AnswerScorer:
         """
         # Placeholder for future implementation
         pass
+    
+    def get_overall_score(
+        self,
+        question: str,
+        path: str = "",
+        node=None,
+        parent_nodes: Optional[List] = None,
+        child_nodes: Optional[List] = None,
+        reference_answers: Optional[List[str]] = None,
+        weights: Optional[Dict[str, float]] = None,
+        normalize: bool = True
+    ) -> Dict[str, Union[float, Dict]]:
+        """
+        Calculate an overall score combining multiple scoring methods.
+        
+        This is the main scoring method that search algorithms should use.
+        It combines various scoring components into a single comprehensive score.
+        
+        Args:
+            question: The question being answered
+            path: Current path/partial answer
+            node: Tree node object (for parent/child analysis) - Future use
+            parent_nodes: List of parent nodes for quality scoring - Future use
+            child_nodes: List of child nodes for quality scoring - Future use
+            reference_answers: Reference answers for similarity scoring - Future use
+            weights: Custom weights for different scoring components
+            normalize: Whether to normalize the final score to 0-1 range
+            
+        Returns:
+            Dictionary containing:
+            - 'overall_score': Final weighted score (0-1 if normalized)
+            - 'component_scores': Individual scores from each method
+            - 'weights_used': The weights applied to each component
+            
+        Example:
+            scorer = AnswerScorer()
+            result = scorer.get_overall_score("What is 2+2?", "")
+            print(f"Overall score: {result['overall_score']:.3f}")
+        """
+        
+        # Default weights for scoring components
+        default_weights = {
+            'confidence': 1.0,          # Currently implemented
+            'parent_child_quality': 0.0,  # Future: weight = 0.3
+            'semantic_similarity': 0.0,   # Future: weight = 0.2
+            'length_penalty': 0.0,        # Future: weight = 0.1
+            'coherence': 0.0,            # Future: weight = 0.2
+            'factual_consistency': 0.0   # Future: weight = 0.2
+        }
+        
+        # Use provided weights or defaults
+        active_weights = weights or default_weights
+        
+        # Initialize component scores
+        component_scores = {}
+        
+        # 1. CONFIDENCE SCORING (Currently implemented)
+        try:
+            confidence_result = self.get_confidence_score(question, path)
+            component_scores['confidence'] = {
+                'score': confidence_result.avg_confidence or 0.0,
+                'details': {
+                    'avg_confidence': confidence_result.avg_confidence,
+                    'min_confidence': confidence_result.min_confidence,
+                    'geometric_confidence': confidence_result.geometric_confidence,
+                    'perplexity': confidence_result.perplexity,
+                    'text_generated': confidence_result.text
+                }
+            }
+        except Exception as e:
+            print(f"Warning: Confidence scoring failed: {e}")
+            component_scores['confidence'] = {'score': 0.0, 'details': {'error': str(e)}}
+        
+        # 2. PARENT/CHILD QUALITY SCORING (Future implementation)
+        if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
+            try:
+                # TODO: Implement when parent/child scoring is ready
+                pc_score = self.score_parent_child_quality(node, parent_nodes or [], child_nodes or [])
+                component_scores['parent_child_quality'] = {'score': pc_score or 0.0, 'details': {}}
+            except:
+                component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        else:
+            component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+        
+        # 3. SEMANTIC SIMILARITY SCORING (Future implementation)
+        if active_weights.get('semantic_similarity', 0) > 0 and reference_answers:
+            try:
+                # TODO: Implement when semantic similarity is ready
+                generated_text = component_scores['confidence']['details'].get('text_generated', '')
+                sim_score = self.score_semantic_similarity(generated_text, reference_answers)
+                component_scores['semantic_similarity'] = {'score': sim_score or 0.0, 'details': {}}
+            except:
+                component_scores['semantic_similarity'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        else:
+            component_scores['semantic_similarity'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+        
+        # 4. LENGTH PENALTY (Simple implementation for now)
+        if active_weights.get('length_penalty', 0) > 0:
+            try:
+                text = component_scores['confidence']['details'].get('text_generated', '')
+                # Simple length penalty: penalize very short or very long answers
+                length = len(text.split())
+                if length < 2:
+                    length_score = 0.5  # Too short
+                elif length > 50:
+                    length_score = max(0.3, 1.0 - (length - 50) * 0.01)  # Too long
+                else:
+                    length_score = 1.0  # Good length
+                component_scores['length_penalty'] = {'score': length_score, 'details': {'word_count': length}}
+            except:
+                component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'error'}}
+        else:
+            component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'disabled'}}
+        
+        # 5. COHERENCE SCORING (Future implementation)
+        component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        
+        # 6. FACTUAL CONSISTENCY (Future implementation) 
+        component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        
+        # Calculate weighted overall score
+        total_weight = 0.0
+        weighted_sum = 0.0
+        weights_used = {}
+        
+        for component, weight in active_weights.items():
+            if weight > 0 and component in component_scores:
+                score = component_scores[component]['score']
+                weighted_sum += score * weight
+                total_weight += weight
+                weights_used[component] = weight
+        
+        # Calculate final score
+        if total_weight > 0:
+            overall_score = weighted_sum / total_weight
+        else:
+            overall_score = 0.0
+        
+        # Normalize to 0-1 range if requested
+        if normalize:
+            overall_score = max(0.0, min(1.0, overall_score))
+        
+        return {
+            'overall_score': overall_score,
+            'component_scores': component_scores,
+            'weights_used': weights_used,
+            'total_weight': total_weight,
+            'metadata': {
+                'question': question,
+                'path': path,
+                'normalized': normalize
+            }
+        }
+    
+    def get_simple_overall_score(
+        self,
+        question: str,
+        path: str = "",
+        custom_weights: Optional[Dict[str, float]] = None
+    ) -> float:
+        """
+        Get a simple overall score (0-1) for easy integration with search algorithms.
+        
+        Args:
+            question: The question being answered
+            path: Current path/partial answer  
+            custom_weights: Optional custom weights for scoring components
+            
+        Returns:
+            Float score between 0.0 and 1.0
+            
+        Example:
+            scorer = AnswerScorer()
+            score = scorer.get_simple_overall_score("What is 2+2?", "")
+            print(f"Score: {score:.3f}")
+        """
+        result = self.get_overall_score(question, path, weights=custom_weights)
+        return result['overall_score']
 
 
 # Convenience functions for easy integration with existing code
@@ -320,6 +498,37 @@ def get_simple_confidence(question: str, path: str = "") -> float:
     """
     result = get_answer_confidence(question, path)
     return result.avg_confidence or 0.0
+
+
+def get_overall_answer_score(
+    question: str, 
+    path: str = "", 
+    config: Optional[PolicyConfig] = None,
+    weights: Optional[Dict[str, float]] = None
+) -> float:
+    """
+    Convenience function to get an overall score (0-1) for a single answer.
+    This is the main function that search algorithms should use.
+    
+    Args:
+        question: The question being answered
+        path: Current path/partial answer
+        config: Policy configuration (uses defaults if None)
+        weights: Custom weights for scoring components
+        
+    Returns:
+        Overall score between 0 and 1
+        
+    Example:
+        # Basic usage
+        score = get_overall_answer_score("What is 2+2?", "")
+        
+        # With custom weights (when more components are available)
+        custom_weights = {"confidence": 0.7, "length_penalty": 0.3}
+        score = get_overall_answer_score("What is 2+2?", "", weights=custom_weights)
+    """
+    scorer = AnswerScorer(config)
+    return scorer.get_simple_overall_score(question, path, weights)
 
 
 # Example usage and testing functions

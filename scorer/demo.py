@@ -10,7 +10,7 @@ cd /workspace/Fetch
 python scorer/demo.py
 """
 
-from scoring import AnswerScorer, get_simple_confidence, ScoringMethod
+from scoring import AnswerScorer, get_simple_confidence, get_overall_answer_score, ScoringMethod
 
 
 def demo_basic_confidence():
@@ -34,87 +34,101 @@ def demo_basic_confidence():
             print(f"❌ Error: {e}")
 
 
-def demo_detailed_scoring():
-    """Demo detailed scoring with all metrics."""
-    print("\n\n📊 Detailed Scoring Demo")
+def demo_overall_scoring():
+    """Demo the new overall scoring system."""
+    print("\n\n🏆 Overall Scoring Demo")
     print("=" * 50)
     
-    scorer = AnswerScorer()
-    question = "What is 12*15?"
+    questions = [
+        "What is 12*15?",
+        "What is the square root of 64?",
+        "Solve 2x + 5 = 15"
+    ]
+    
+    for question in questions:
+        print(f"\n📝 Question: {question}")
+        try:
+            # Get simple overall score
+            overall_score = get_overall_answer_score(question)
+            print(f"🏆 Overall Score: {overall_score:.3f}")
+            
+            # Get detailed breakdown
+            scorer = AnswerScorer()
+            detailed_result = scorer.get_overall_score(question)
+            
+            print(f"📊 Component Breakdown:")
+            for component, data in detailed_result['component_scores'].items():
+                if data['score'] > 0:
+                    print(f"   • {component}: {data['score']:.3f}")
+                    
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+
+def demo_custom_weights():
+    """Demo custom weighting for overall scoring."""
+    print("\n\n⚖️ Custom Weights Demo")
+    print("=" * 50)
+    
+    question = "What is 25*16?"
+    
+    # Test different weight configurations
+    weight_configs = [
+        ("Default (confidence only)", None),
+        ("With length penalty", {"confidence": 0.8, "length_penalty": 0.2}),
+        ("Future example", {"confidence": 0.5, "parent_child_quality": 0.3, "semantic_similarity": 0.2})
+    ]
     
     print(f"📝 Question: {question}")
     
-    try:
-        result = scorer.get_confidence_score(question, "", include_raw=False)
-        
-        print(f"\n🤖 Generated Answer: '{result.text}'")
-        print(f"📈 Average Confidence: {result.avg_confidence:.3f}" if result.avg_confidence else "No avg confidence")
-        print(f"⬇️  Minimum Confidence: {result.min_confidence:.3f}" if result.min_confidence else "No min confidence") 
-        print(f"📐 Geometric Confidence: {result.geometric_confidence:.3f}" if result.geometric_confidence else "No geometric confidence")
-        print(f"🌀 Perplexity: {result.perplexity:.2f}" if result.perplexity else "No perplexity")
-        
-        if result.tokens and result.token_logprobs:
-            print(f"\n🔤 Token Details:")
-            for token, logprob in zip(result.tokens, result.token_logprobs):
-                if logprob is not None:
-                    confidence = round(2.718 ** logprob, 3)  # exp(logprob)
-                    print(f"   '{token}' → {confidence:.3f}")
-                    
-    except Exception as e:
-        print(f"❌ Error: {e}")
-
-
-def demo_step_by_step():
-    """Demo step-by-step reasoning with confidence."""
-    print("\n\n🪜 Step-by-Step Reasoning Demo")
-    print("=" * 50)
-    
-    scorer = AnswerScorer()
-    question = "What is 25*16?"
-    
-    # Simulate step-by-step reasoning
-    paths = [
-        "",  # No previous steps
-        "I need to multiply 25 by 16.",  # First step
-        "I need to multiply 25 by 16. Let me break this down: 25 * 16 = 25 * (10 + 6)"  # More context
-    ]
-    
-    for i, path in enumerate(paths):
-        print(f"\n🔹 Step {i+1}:")
-        print(f"   Previous context: '{path if path else 'None'}'")
-        
+    for config_name, weights in weight_configs:
         try:
-            result = scorer.get_confidence_score(question, path)
-            print(f"   🤖 Generated: '{result.text}'")
-            print(f"   📈 Confidence: {result.avg_confidence:.3f}" if result.avg_confidence else "   No confidence")
+            score = get_overall_answer_score(question, "", weights=weights)
+            print(f"\n⚖️ {config_name}: {score:.3f}")
+            
+            if weights:
+                print(f"   Weights: {weights}")
+                
         except Exception as e:
-            print(f"   ❌ Error: {e}")
+            print(f"❌ {config_name}: Error - {e}")
 
 
-def demo_different_methods():
-    """Demo different scoring methods."""
-    print("\n\n🔄 Different Scoring Methods Demo")
+def demo_detailed_breakdown():
+    """Demo detailed scoring breakdown."""
+    print("\n\n🔍 Detailed Breakdown Demo")
     print("=" * 50)
     
     scorer = AnswerScorer()
     question = "What is 7*9?"
     
-    methods = [
-        ("Average Confidence", ScoringMethod.CONFIDENCE_AVERAGE),
-        ("Minimum Confidence", ScoringMethod.CONFIDENCE_MIN),
-        ("Geometric Confidence", ScoringMethod.CONFIDENCE_GEOMETRIC),
-        ("Perplexity (inverted)", ScoringMethod.PERPLEXITY)
-    ]
-    
     print(f"📝 Question: {question}")
     
-    for method_name, method in methods:
-        try:
-            result = scorer.get_confidence_score(question, "", method=method)
-            primary_score = scorer.get_primary_score(result, method)
-            print(f"   📊 {method_name}: {primary_score:.3f}")
-        except Exception as e:
-            print(f"   ❌ {method_name}: Error - {e}")
+    try:
+        result = scorer.get_overall_score(question, "", weights={"confidence": 0.8, "length_penalty": 0.2})
+        
+        print(f"\n🏆 Overall Score: {result['overall_score']:.3f}")
+        print(f"⚖️ Total Weight: {result['total_weight']:.1f}")
+        
+        print(f"\n📊 Component Details:")
+        for component, data in result['component_scores'].items():
+            score = data['score']
+            status = data['details'].get('status', 'active')
+            
+            if score > 0 or status == 'active':
+                print(f"   • {component}: {score:.3f}")
+                if 'text_generated' in data['details']:
+                    print(f"     Generated: '{data['details']['text_generated']}'")
+                if 'word_count' in data['details']:
+                    print(f"     Word count: {data['details']['word_count']}")
+            else:
+                print(f"   • {component}: {status}")
+        
+        print(f"\n⚖️ Weights Used:")
+        for component, weight in result['weights_used'].items():
+            print(f"   • {component}: {weight:.1f}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
 
 def check_server():
@@ -141,7 +155,7 @@ def check_server():
 
 def main():
     """Run all demos."""
-    print("🚀 Scoring System Demo")
+    print("🚀 Enhanced Scoring System Demo")
     print("=" * 60)
     
     # Check server first
@@ -151,16 +165,16 @@ def main():
     
     # Run demos
     demo_basic_confidence()
-    demo_detailed_scoring()
-    demo_step_by_step()
-    demo_different_methods()
+    demo_overall_scoring()
+    demo_custom_weights()
+    demo_detailed_breakdown()
     
     print("\n\n🎉 Demo Complete!")
     print("=" * 60)
-    print("\n💡 Try running individual functions:")
-    print("   from scorer.demo import demo_basic_confidence")
-    print("   demo_basic_confidence()")
+    print("\n💡 For search algorithms, use:")
+    print("   from scorer.scoring import get_overall_answer_score")
+    print("   score = get_overall_answer_score(question, path)")
 
 
 if __name__ == "__main__":
-    main() 
+    main()
