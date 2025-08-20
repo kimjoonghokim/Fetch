@@ -17,6 +17,15 @@ class ScoringMethod(Enum):
     # SEMANTIC_SIMILARITY = "semantic_similarity"
     # ENSEMBLE_VOTING = "ensemble_voting"
 
+@dataclass
+class VoteScore:
+    """Container for vote scoring results"""
+    text: str
+    vote_score: Optional[float] = None
+    merge_count: int = 0  # Number of semantic similarity merges
+    cluster_sizes: Optional[List[int]] = None  # Sizes of merged clusters
+    semantic_groups: Optional[List[List[str]]] = None  # Groups of semantically similar texts
+    raw_response: Optional[Dict] = None
 
 @dataclass
 class ConfidenceScore:
@@ -42,6 +51,10 @@ class PolicyConfig:
     max_tokens: int = 512
     stop_tokens: List[str] = None
     
+    # ESM service configuration
+    esm_url: str = "http://127.0.0.1"
+    esm_port: int = 8003
+    
     def __post_init__(self):
         if self.stop_tokens is None:
             self.stop_tokens = ["\n"]
@@ -49,6 +62,10 @@ class PolicyConfig:
     @property
     def endpoint_url(self) -> str:
         return f"{self.url}:{self.port}/v1/completions"
+    
+    @property
+    def esm_endpoint_url(self) -> str:
+        return f"{self.esm_url}:{self.esm_port}/predict"
 
 
 class AnswerScorer:
@@ -284,6 +301,288 @@ class AnswerScorer:
         # Placeholder for future implementation
         pass
     
+    def check_esm_service(self) -> bool:
+        """
+        Check if ESM service is available.
+        
+        Returns:
+            True if ESM service is reachable, False otherwise
+        """
+        try:
+            import requests
+            
+            # Try to connect to the ESM service
+            response = requests.get(f"{self.config.esm_url}:{self.config.esm_port}/health", timeout=5)
+            return response.status_code == 200
+        except:
+            # Try a simple predict call with minimal data
+            try:
+                response = requests.post(
+                    self.config.esm_endpoint_url, 
+                    json={"texts": ["test"], "d": 0.1}, 
+                    timeout=5
+                )
+                return response.status_code == 200
+            except:
+                return False
+    
+    def get_vote_score(
+        self,
+        question: str,
+        path: str = "",
+        candidate_paths: Optional[List[str]] = None,
+        similarity_threshold: float = 0.15,
+        include_raw: bool = False
+    ) -> VoteScore:
+        """
+        Get vote score based on semantic similarity merges.
+        
+        Args:
+            question: The question being answered
+            path: Current path/partial answer
+            candidate_paths: List of candidate paths to compare against
+            similarity_threshold: Distance threshold for semantic clustering (0.0-1.0)
+            include_raw: Whether to include raw clustering results
+            
+        Returns:
+            VoteScore object with voting results
+        """
+        try:
+            if not candidate_paths:
+                # No candidates to compare against
+                return VoteScore(
+                    text=path,
+                    vote_score=1.0,
+                    merge_count=0,
+                    cluster_sizes=[1],
+                    semantic_groups=[[path]] if path else []
+                )
+            
+            # Add current path to candidates for clustering
+            all_paths = [path] + candidate_paths if path else candidate_paths
+            
+            # Check ESM service availability
+            esm_available = self.check_esm_service()
+            
+            # Perform semantic clustering
+            if esm_available:
+                clusters = self._cluster_semantically(all_paths, similarity_threshold)
+                clustering_method = "ESM"
+            else:
+                print("Warning: ESM service unavailable, using fallback clustering")
+                clusters = self._fallback_clustering_simple(all_paths, similarity_threshold)
+                clustering_method = "fallback"
+            
+            # Find the cluster containing the current path
+            current_cluster = None
+            for cluster in clusters:
+                if path in cluster:
+                    current_cluster = cluster
+                    break
+            
+            if not current_cluster:
+                # Current path not found in any cluster (shouldn't happen)
+                return VoteScore(
+                    text=path,
+                    vote_score=1.0,
+                    merge_count=0,
+                    cluster_sizes=[1],
+                    semantic_groups=[[path]] if path else []
+                )
+            
+            # Calculate vote score based on cluster size
+            cluster_size = len(current_cluster)
+            merge_count = max(0, cluster_size - 1)  # Number of potential merges
+            
+            # Base score is 1.0, each merge adds 0.1
+            vote_score = 1.0 + (merge_count * 0.1)
+            
+            # Cap the score at 2.0
+            vote_score = min(2.0, vote_score)
+            
+            # Get all cluster sizes for analysis
+            cluster_sizes = [len(cluster) for cluster in clusters]
+            
+            raw_response = {
+                "clusters": clusters, 
+                "threshold": similarity_threshold,
+                "clustering_method": clustering_method,
+                "esm_available": esm_available
+            } if include_raw else None
+            
+            return VoteScore(
+                text=path,
+                vote_score=vote_score,
+                merge_count=merge_count,
+                cluster_sizes=cluster_sizes,
+                semantic_groups=clusters,
+                raw_response=raw_response
+            )
+            
+        except Exception as e:
+            print(f"Error calculating vote score: {e}")
+            return VoteScore(
+                text=path,
+                vote_score=1.0,
+                merge_count=0,
+                cluster_sizes=[1],
+                semantic_groups=[[path]] if path else [],
+                raw_response={"error": str(e)}
+            )
+    
+    def _cluster_semantically(self, texts: List[str], threshold: float) -> List[List[str]]:
+        """
+        Perform semantic clustering on texts using ESM service.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold for clustering (0.0-1.0)
+            
+        Returns:
+            List of clusters, where each cluster is a list of similar texts
+        """
+        if len(texts) <= 1:
+            return [texts] if texts else []
+        
+        try:
+            # Call ESM service for semantic clustering
+            labels = self._call_esm_service(texts, threshold)
+            
+            # Group texts by cluster labels
+            clusters = {}
+            for text, label in zip(texts, labels):
+                if label not in clusters:
+                    clusters[label] = []
+                clusters[label].append(text)
+            
+            # Return list of clusters
+            return list(clusters.values())
+            
+        except Exception as e:
+            print(f"Error in ESM semantic clustering: {e}")
+            # Fallback: each text is its own cluster
+            return [[text] for text in texts]
+    
+    def _call_esm_service(self, texts: List[str], threshold: float) -> List[int]:
+        """
+        Call ESM service for semantic clustering.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold for clustering
+            
+        Returns:
+            List of cluster labels for each text
+        """
+        try:
+            import requests
+            
+            # ESM service endpoint from configuration
+            url = self.config.esm_endpoint_url
+            
+            # Prepare payload
+            payload = {
+                "texts": texts,
+                "d": threshold
+            }
+            
+            # Make request to ESM service
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            # Extract cluster labels
+            result = response.json()
+            return result["labels"]
+            
+        except Exception as e:
+            print(f"ESM service call failed: {e}")
+            # Fallback to simple clustering if ESM service is unavailable
+            return self._fallback_clustering(texts, threshold)
+    
+    def _fallback_clustering(self, texts: List[str], threshold: float) -> List[int]:
+        """
+        Fallback clustering method when ESM service is unavailable.
+        Uses simple word overlap similarity.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Similarity threshold for clustering
+            
+        Returns:
+            List of cluster labels for each text
+        """
+        if len(texts) <= 1:
+            return [0] if texts else []
+        
+        clusters = []
+        used_indices = set()
+        next_label = 0
+        
+        for i, text1 in enumerate(texts):
+            if i in used_indices:
+                continue
+            
+            # Start a new cluster
+            cluster_label = next_label
+            next_label += 1
+            clusters.append(cluster_label)
+            used_indices.add(i)
+            
+            # Find similar texts
+            for j, text2 in enumerate(texts[i+1:], i+1):
+                if j in used_indices:
+                    continue
+                
+                # Simple similarity check
+                similarity = self._calculate_text_similarity(text1, text2)
+                if similarity >= threshold:
+                    clusters.append(cluster_label)
+                    used_indices.add(j)
+                else:
+                    clusters.append(next_label)
+                    next_label += 1
+                    used_indices.add(j)
+        
+        return clusters
+    
+    def _fallback_clustering_simple(self, texts: List[str], threshold: float) -> List[List[str]]:
+        """
+        Simple fallback clustering when ESM service is unavailable.
+        Each text gets its own cluster.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold (ignored in fallback)
+            
+        Returns:
+            List of clusters, where each cluster contains one text
+        """
+        return [[text] for text in texts]
+    
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+        """
+        Calculate similarity between two texts.
+        This is a simplified version - in practice, use the ESM service.
+        
+        Args:
+            text1: First text
+            text2: Second text
+            
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        # Simple word overlap similarity as fallback
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        return intersection / union if union > 0 else 0.0
+    
     def get_overall_score(
         self,
         question: str,
@@ -292,6 +591,7 @@ class AnswerScorer:
         parent_nodes: Optional[List] = None,
         child_nodes: Optional[List] = None,
         reference_answers: Optional[List[str]] = None,
+        candidate_paths: Optional[List[str]] = None,
         weights: Optional[Dict[str, float]] = None,
         normalize: bool = True
     ) -> Dict[str, Union[float, Dict]]:
@@ -308,6 +608,7 @@ class AnswerScorer:
             parent_nodes: List of parent nodes for quality scoring - Future use
             child_nodes: List of child nodes for quality scoring - Future use
             reference_answers: Reference answers for similarity scoring - Future use
+            candidate_paths: List of candidate paths for vote scoring
             weights: Custom weights for different scoring components
             normalize: Whether to normalize the final score to 0-1 range
             
@@ -319,13 +620,14 @@ class AnswerScorer:
             
         Example:
             scorer = AnswerScorer()
-            result = scorer.get_overall_score("What is 2+2?", "")
+            result = scorer.get_overall_score("What is 2+2?", "", candidate_paths=["Let me solve", "I'll calculate"])
             print(f"Overall score: {result['overall_score']:.3f}")
         """
         
         # Default weights for scoring components
         default_weights = {
-            'confidence': 1.0,          # Currently implemented
+            'confidence': 0.6,          # Currently implemented
+            'vote_score': 0.4,          # NEW: Vote scoring based on semantic merges
             'parent_child_quality': 0.0,  # Future: weight = 0.3
             'semantic_similarity': 0.0,   # Future: weight = 0.2
             'length_penalty': 0.0,        # Future: weight = 0.1
@@ -356,7 +658,28 @@ class AnswerScorer:
             print(f"Warning: Confidence scoring failed: {e}")
             component_scores['confidence'] = {'score': 0.0, 'details': {'error': str(e)}}
         
-        # 2. PARENT/CHILD QUALITY SCORING (Future implementation)
+        # 2. VOTE SCORING (NEW: Based on semantic similarity merges)
+        if active_weights.get('vote_score', 0) > 0:
+            try:
+                vote_result = self.get_vote_score(question, path, candidate_paths)
+                # Normalize vote score from 1.0-2.0 range to 0.0-1.0 range
+                normalized_vote_score = (vote_result.vote_score - 1.0)  # Now 0.0-1.0
+                component_scores['vote_score'] = {
+                    'score': normalized_vote_score,
+                    'details': {
+                        'raw_vote_score': vote_result.vote_score,
+                        'merge_count': vote_result.merge_count,
+                        'cluster_sizes': vote_result.cluster_sizes,
+                        'semantic_groups': vote_result.semantic_groups
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Vote scoring failed: {e}")
+                component_scores['vote_score'] = {'score': 0.0, 'details': {'error': str(e)}}
+        else:
+            component_scores['vote_score'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+        
+        # 3. PARENT/CHILD QUALITY SCORING (Future implementation)
         if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
             try:
                 # TODO: Implement when parent/child scoring is ready
@@ -367,7 +690,7 @@ class AnswerScorer:
         else:
             component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 3. SEMANTIC SIMILARITY SCORING (Future implementation)
+        # 4. SEMANTIC SIMILARITY SCORING (Future implementation)
         if active_weights.get('semantic_similarity', 0) > 0 and reference_answers:
             try:
                 # TODO: Implement when semantic similarity is ready
@@ -379,7 +702,7 @@ class AnswerScorer:
         else:
             component_scores['semantic_similarity'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 4. LENGTH PENALTY (Simple implementation for now)
+        # 5. LENGTH PENALTY (Simple implementation for now)
         if active_weights.get('length_penalty', 0) > 0:
             try:
                 text = component_scores['confidence']['details'].get('text_generated', '')
@@ -397,10 +720,10 @@ class AnswerScorer:
         else:
             component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'disabled'}}
         
-        # 5. COHERENCE SCORING (Future implementation)
+        # 6. COHERENCE SCORING (Future implementation)
         component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
-        # 6. FACTUAL CONSISTENCY (Future implementation) 
+        # 7. FACTUAL CONSISTENCY (Future implementation) 
         component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
         # Calculate weighted overall score
@@ -433,6 +756,7 @@ class AnswerScorer:
             'metadata': {
                 'question': question,
                 'path': path,
+                'candidate_paths': candidate_paths,
                 'normalized': normalize
             }
         }
@@ -441,6 +765,7 @@ class AnswerScorer:
         self,
         question: str,
         path: str = "",
+        candidate_paths: Optional[List[str]] = None,
         custom_weights: Optional[Dict[str, float]] = None
     ) -> float:
         """
@@ -449,6 +774,7 @@ class AnswerScorer:
         Args:
             question: The question being answered
             path: Current path/partial answer  
+            candidate_paths: List of candidate paths for vote scoring
             custom_weights: Optional custom weights for scoring components
             
         Returns:
@@ -456,10 +782,10 @@ class AnswerScorer:
             
         Example:
             scorer = AnswerScorer()
-            score = scorer.get_simple_overall_score("What is 2+2?", "")
+            score = scorer.get_simple_overall_score("What is 2+2?", "", ["Let me solve", "I'll calculate"])
             print(f"Score: {score:.3f}")
         """
-        result = self.get_overall_score(question, path, weights=custom_weights)
+        result = self.get_overall_score(question, path, candidate_paths=candidate_paths, weights=custom_weights)
         return result['overall_score']
 
 
@@ -504,6 +830,7 @@ def get_overall_answer_score(
     question: str, 
     path: str = "", 
     config: Optional[PolicyConfig] = None,
+    candidate_paths: Optional[List[str]] = None,
     weights: Optional[Dict[str, float]] = None
 ) -> float:
     """
@@ -514,6 +841,7 @@ def get_overall_answer_score(
         question: The question being answered
         path: Current path/partial answer
         config: Policy configuration (uses defaults if None)
+        candidate_paths: List of candidate paths for vote scoring
         weights: Custom weights for scoring components
         
     Returns:
@@ -523,12 +851,72 @@ def get_overall_answer_score(
         # Basic usage
         score = get_overall_answer_score("What is 2+2?", "")
         
+        # With candidate paths for vote scoring
+        candidates = ["Let me solve this", "I'll calculate step by step"]
+        score = get_overall_answer_score("What is 2+2?", "", candidate_paths=candidates)
+        
         # With custom weights (when more components are available)
-        custom_weights = {"confidence": 0.7, "length_penalty": 0.3}
-        score = get_overall_answer_score("What is 2+2?", "", weights=custom_weights)
+        custom_weights = {"confidence": 0.7, "vote_score": 0.3}
+        score = get_overall_answer_score("What is 2+2?", "", candidate_paths=candidates, weights=custom_weights)
     """
     scorer = AnswerScorer(config)
-    return scorer.get_simple_overall_score(question, path, weights)
+    return scorer.get_simple_overall_score(question, path, candidate_paths, weights)
+
+
+def get_vote_score_simple(
+    question: str, 
+    path: str = "", 
+    candidate_paths: Optional[List[str]] = None,
+    config: Optional[PolicyConfig] = None
+) -> float:
+    """
+    Get a simple vote score (1.0-2.0) based on semantic similarity merges.
+    
+    Args:
+        question: The question being answered
+        path: Current path/partial answer
+        candidate_paths: List of candidate paths to compare against
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        Vote score between 1.0 and 2.0 (higher = more merges)
+        
+    Example:
+        # Basic usage
+        score = get_vote_score_simple("What is 2+2?", "")
+        
+        # With candidate paths
+        candidates = ["Let me solve this", "I'll calculate step by step"]
+        score = get_vote_score_simple("What is 2+2?", "", candidates)
+        print(f"Vote score: {score:.3f}")  # Will be 1.0-2.0
+        
+        # For detailed information, use AnswerScorer directly:
+        # scorer = AnswerScorer()
+        # details = scorer.get_vote_score(question, path, candidates, include_raw=True)
+    """
+    scorer = AnswerScorer(config)
+    vote_result = scorer.get_vote_score(question, path, candidate_paths)
+    return vote_result.vote_score or 1.0
+
+
+def check_esm_service_status(config: Optional[PolicyConfig] = None) -> bool:
+    """
+    Check if ESM service is available.
+    
+    Args:
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        True if ESM service is reachable, False otherwise
+        
+    Example:
+        if check_esm_service_status():
+            print("ESM service is available")
+        else:
+            print("ESM service is unavailable")
+    """
+    scorer = AnswerScorer(config)
+    return scorer.check_esm_service()
 
 
 # Example usage and testing functions

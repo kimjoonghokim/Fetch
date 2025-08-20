@@ -4,8 +4,8 @@ This directory contains a comprehensive scoring system for evaluating the confid
 
 ## 📁 Files Overview
 
-- **`scoring.py`** - Main scoring system with confidence calculation methods
-- **`demo.py`** - Interactive demonstration and testing script
+- **`scoring.py`** - Main scoring system with confidence and vote calculation methods
+- **`demo.py`** - Interactive demonstration and testing script with vote scoring examples
 
 ## 🎯 What is Confidence Scoring?
 
@@ -206,11 +206,42 @@ config = PolicyConfig(
     port=8000,
     model_name="your-model-name",
     temperature=0.5,
-    max_tokens=256
+    max_tokens=256,
+    # ESM service configuration
+    esm_url="http://127.0.0.1",
+    esm_port=8003
 )
 
 scorer = AnswerScorer(config)
 ```
+
+### ESM Service Setup
+
+To use the full vote scoring capabilities, you need the ESM service running:
+
+1. **Start ESM Service**:
+   ```bash
+   cd cluster/
+   python server_cluster.py
+   ```
+
+2. **Check ESM Status**:
+   ```python
+   from scorer.scoring import check_esm_service_status
+   
+   if check_esm_service_status():
+       print("ESM service is available")
+   else:
+       print("ESM service is unavailable - using fallback clustering")
+   ```
+
+3. **Custom ESM Endpoint**:
+   ```python
+   config = PolicyConfig(
+       esm_url="http://your-esm-server.com",
+       esm_port=8003
+   )
+   ```
 
 ## 📊 Understanding Results
 
@@ -322,6 +353,141 @@ class MCTSNode:
         return self.verifier_value * 0.7 + self.confidence_score * 0.3
 ```
 
+## 🗳️ Vote Scoring (NEW!)
+
+**Vote scoring** is a new feature that rewards answers based on how many semantically similar paths have been found during search. Think of it like a voting system where similar approaches get grouped together and receive higher scores.
+
+### How Vote Scoring Works
+
+1. **Semantic Clustering**: The system groups similar answer paths using the ESM (Embedding-based Semantic Model) service
+2. **Merge Counting**: Each group of similar paths represents a potential "merge" operation
+3. **Score Calculation**: Higher merge counts lead to higher vote scores
+
+### ESM Service Integration
+
+The vote scoring system integrates with the ESM service for high-quality semantic similarity:
+
+- **Primary Method**: Uses ESM service at `http://127.0.0.1:8003/predict` for semantic clustering
+- **Fallback Method**: Falls back to simple word overlap if ESM service is unavailable
+- **Configuration**: ESM endpoint can be customized via `PolicyConfig.esm_url` and `PolicyConfig.esm_port`
+
+### Vote Score Calculation
+
+- **Base Score**: 1.0 (every answer starts here)
+- **Merge Bonus**: +0.1 per potential merge opportunity
+- **Size Bonus**: +0.05 per additional similar path in the current cluster
+- **Maximum**: Capped at 2.0 to prevent runaway scoring
+
+### Example
+
+```python
+from scorer.scoring import get_vote_score_simple
+
+# With semantically similar candidates
+candidates = [
+    "Let me solve this step by step",
+    "I'll calculate this multiplication", 
+    "Let me work through this problem"
+]
+
+vote_score = get_vote_score_simple("What is 15*8?", "Let me solve this", candidates)
+# Result: ~1.3 (indicating 3 similar approaches found)
+```
+
+### When to Use Vote Scoring
+
+- **Search Algorithms**: When you have multiple candidate paths to compare
+- **Ensemble Methods**: To reward answers that multiple approaches agree on
+- **Quality Assessment**: To identify answers that are "popular" among similar approaches
+
 ---
 
 *Need help? Check the demo output or create an issue with your specific error message.*
+
+## 🔍 Integration with Search Algorithms
+
+The vote scoring system is designed to integrate seamlessly with search algorithms that perform semantic similarity merging. Here's how to use it:
+
+### Beam Search Integration
+
+```python
+def score_beam_candidates(question, current_path, candidate_nodes):
+    """Score candidates in beam search using combined scoring."""
+    candidate_paths = [node.content for node in candidate_nodes]
+    
+    # Get combined score (confidence + vote)
+    score = get_overall_answer_score(
+        question, 
+        current_path, 
+        candidate_paths=candidate_paths
+    )
+    return score
+
+# In your beam search loop:
+for candidate in beam_candidates:
+    score = score_beam_candidates(question, current_path, [candidate])
+    # Use score for beam selection
+```
+
+### MCTS Integration
+
+```python
+def evaluate_mcts_node(question, node_path, sibling_paths):
+    """Evaluate MCTS node using vote scoring."""
+    # Get vote score based on sibling similarity
+    vote_score = get_vote_score_simple(question, node_path, sibling_paths)
+    
+    # Combine with other node evaluation metrics
+    return vote_score * 0.3 + other_metrics * 0.7
+```
+
+## 🚨 Troubleshooting
+
+### ESM Service Issues
+
+**Problem**: Vote scoring falls back to simple clustering
+**Solution**: 
+1. Check if ESM service is running: `python cluster/server_cluster.py`
+2. Verify endpoint: `http://127.0.0.1:8003/predict`
+3. Check firewall/network settings
+
+**Problem**: ESM service timeout errors
+**Solution**:
+1. Increase timeout in configuration
+2. Check ESM service performance
+3. Reduce batch size for clustering
+
+**Problem**: Different clustering results than expected
+**Solution**:
+1. Adjust similarity threshold (default: 0.15)
+2. Check ESM model quality
+3. Verify text preprocessing
+
+### Vote Scoring with Candidate Paths
+```python
+# Evaluate answer considering similar candidate paths
+question = "What is 15*8?"
+path = "Let me solve this step by step"
+candidates = [
+    "I'll calculate this multiplication",
+    "Let me work through this problem",
+    "I need to multiply 15 by 8"
+]
+
+# Get vote score only
+from scorer.scoring import get_vote_score_simple
+vote_score = get_vote_score_simple(question, path, candidates)
+print(f"Vote score: {vote_score:.3f}")
+
+# Get combined score (confidence + vote)
+combined_score = get_overall_answer_score(question, path, candidate_paths=candidates)
+print(f"Combined score: {combined_score:.3f}")
+
+# For detailed vote information, use AnswerScorer directly
+from scorer.scoring import AnswerScorer
+scorer = AnswerScorer()
+vote_details = scorer.get_vote_score(question, path, candidates, include_raw=True)
+print(f"Merge count: {vote_details.merge_count}")
+print(f"Cluster sizes: {vote_details.cluster_sizes}")
+print(f"Clustering method: {vote_details.raw_response['clustering_method']}")
+```
