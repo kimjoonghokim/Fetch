@@ -12,6 +12,7 @@ class ScoringMethod(Enum):
     CONFIDENCE_MIN = "confidence_min"
     CONFIDENCE_GEOMETRIC = "confidence_geometric"
     PERPLEXITY = "perplexity"
+    REPEATING_NODE = "repeating_node"  # NEW: Repeating node scoring
     # Future methods to be implemented:
     # PARENT_CHILD_QUALITY = "parent_child_quality"
     # SEMANTIC_SIMILARITY = "semantic_similarity"
@@ -38,6 +39,17 @@ class ConfidenceScore:
     token_logprobs: Optional[List[float]] = None
     tokens: Optional[List[str]] = None
     top_logprobs: Optional[List[Dict]] = None
+    raw_response: Optional[Dict] = None
+
+@dataclass
+class RepeatingNodeScore:
+    """Container for repeating node scoring results"""
+    text: str
+    repeating_score: Optional[float] = None
+    early_boost: float = 0.0  # Boost for appearing earlier
+    similar_nodes_found: int = 0  # Number of similar nodes found later
+    node_depth: int = 0  # Depth of this node in the tree
+    similar_node_depths: Optional[List[int]] = None  # Depths of similar nodes
     raw_response: Optional[Dict] = None
 
 
@@ -583,6 +595,87 @@ class AnswerScorer:
         
         return intersection / union if union > 0 else 0.0
     
+    def get_repeating_node_score(
+        self,
+        question: str,
+        path: str = "",
+        node_depth: int = 0,
+        all_tree_paths: Optional[List[Tuple[str, int]]] = None,
+        similarity_threshold: float = 0.15,
+        early_boost_factor: float = 0.3,  # Increased from 0.1 to 0.3 for more noticeable boosts
+        include_raw: bool = False
+    ) -> RepeatingNodeScore:
+        """
+        Calculate repeating node score based on semantic similarity with earlier reasoning.
+        
+        Scoring logic:
+        - Base score: 1.0
+        - Early boost: (1 + num_similar_nodes) * early_boost_factor * depth_advantage
+        - Depth advantage: (max_depth - current_depth) / max_depth
+        - Later nodes get minimal boost, earlier nodes get larger boost
+        """
+        if not all_tree_paths or len(all_tree_paths) < 2:
+            return RepeatingNodeScore(
+                text=path,
+                repeating_score=1.0,
+                early_boost=0.0,
+                similar_nodes_found=0,
+                node_depth=node_depth
+            )
+        
+        # DEBUG: Print all tree paths for inspection
+        print(f"\n🔍 DEBUG: Analyzing repeating node score for path: '{path}' at depth {node_depth}")
+        print(f"📊 All tree paths ({len(all_tree_paths)} total):")
+        for i, (p, d) in enumerate(all_tree_paths):
+            print(f"   [{i}] Depth {d}: '{p}'")
+        
+        similar_nodes = []
+        max_depth = max(depth for _, depth in all_tree_paths)
+        
+        # Find semantically similar nodes that appear later in the tree
+        for other_path, other_depth in all_tree_paths:
+            if other_depth > node_depth:  # Only look at deeper nodes
+                similarity = self._calculate_text_similarity(path, other_path)
+                if similarity >= similarity_threshold:
+                    similar_nodes.append((other_path, other_depth, similarity))
+        
+        if not similar_nodes:
+            return RepeatingNodeScore(
+                text=path,
+                repeating_score=1.0,
+                early_boost=0.0,
+                similar_nodes_found=0,
+                node_depth=node_depth
+            )
+        
+        # Calculate early boost based on depth advantage
+        num_similar = len(similar_nodes)
+        depth_advantage = (max_depth - node_depth) / max_depth  # Higher for shallower nodes
+        
+        # Early boost formula: (1 + num_similar) * early_boost_factor * depth_advantage
+        early_boost = (1 + num_similar) * early_boost_factor * depth_advantage
+        
+        # Final score: base + early boost
+        final_score = 1.0 + early_boost
+        
+        # Store similar node depths for debugging
+        similar_depths = [depth for _, depth, _ in similar_nodes]
+        
+        print(f"📊 Similar nodes found: {num_similar}")
+        print(f"   • Depth advantage: {depth_advantage:.3f}")
+        print(f"   • Early boost: {early_boost:.3f}")
+        print(f"   • Final score: {final_score:.3f}")
+        
+        return RepeatingNodeScore(
+            text=path,
+            repeating_score=final_score,
+            early_boost=early_boost,
+            similar_nodes_found=num_similar,
+            node_depth=node_depth,
+            similar_node_depths=similar_depths,
+            raw_response={"similar_nodes": similar_nodes} if include_raw else None
+        )
+    
     def get_overall_score(
         self,
         question: str,
@@ -592,6 +685,8 @@ class AnswerScorer:
         child_nodes: Optional[List] = None,
         reference_answers: Optional[List[str]] = None,
         candidate_paths: Optional[List[str]] = None,
+        all_tree_paths: Optional[List[Tuple[str, int]]] = None,  # NEW: for repeating node scoring
+        node_depth: int = 0,  # NEW: depth of current node
         weights: Optional[Dict[str, float]] = None,
         normalize: bool = True
     ) -> Dict[str, Union[float, Dict]]:
@@ -609,6 +704,8 @@ class AnswerScorer:
             child_nodes: List of child nodes for quality scoring - Future use
             reference_answers: Reference answers for similarity scoring - Future use
             candidate_paths: List of candidate paths for vote scoring
+            all_tree_paths: List of all paths in tree with depths for repeating node scoring
+            node_depth: Depth of current node in the tree for repeating node scoring
             weights: Custom weights for different scoring components
             normalize: Whether to normalize the final score to 0-1 range
             
@@ -617,17 +714,13 @@ class AnswerScorer:
             - 'overall_score': Final weighted score (0-1 if normalized)
             - 'component_scores': Individual scores from each method
             - 'weights_used': The weights applied to each component
-            
-        Example:
-            scorer = AnswerScorer()
-            result = scorer.get_overall_score("What is 2+2?", "", candidate_paths=["Let me solve", "I'll calculate"])
-            print(f"Overall score: {result['overall_score']:.3f}")
         """
         
         # Default weights for scoring components
         default_weights = {
-            'confidence': 0.6,          # Currently implemented
-            'vote_score': 0.4,          # NEW: Vote scoring based on semantic merges
+            'confidence': 0.5,          # Reduced from 0.6 to make room for repeating node
+            'vote_score': 0.3,          # Reduced from 0.4
+            'repeating_node': 0.2,      # NEW: Repeating node scoring
             'parent_child_quality': 0.0,  # Future: weight = 0.3
             'semantic_similarity': 0.0,   # Future: weight = 0.2
             'length_penalty': 0.0,        # Future: weight = 0.1
@@ -658,7 +751,7 @@ class AnswerScorer:
             print(f"Warning: Confidence scoring failed: {e}")
             component_scores['confidence'] = {'score': 0.0, 'details': {'error': str(e)}}
         
-        # 2. VOTE SCORING (NEW: Based on semantic similarity merges)
+        # 2. VOTE SCORING (Based on semantic similarity merges)
         if active_weights.get('vote_score', 0) > 0:
             try:
                 vote_result = self.get_vote_score(question, path, candidate_paths)
@@ -679,7 +772,31 @@ class AnswerScorer:
         else:
             component_scores['vote_score'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 3. PARENT/CHILD QUALITY SCORING (Future implementation)
+        # 3. REPEATING NODE SCORING (NEW: Rewards earlier reasoning when similar reasoning appears later)
+        if active_weights.get('repeating_node', 0) > 0:
+            try:
+                repeating_result = self.get_repeating_node_score(
+                    question, path, node_depth, all_tree_paths
+                )
+                # Normalize repeating node score from 1.0-2.0 range to 0.0-1.0 range
+                normalized_repeating_score = (repeating_result.repeating_score - 1.0)  # Now 0.0-1.0
+                component_scores['repeating_node'] = {
+                    'score': normalized_repeating_score,
+                    'details': {
+                        'raw_repeating_score': repeating_result.repeating_score,
+                        'early_boost': repeating_result.early_boost,
+                        'similar_nodes_found': repeating_result.similar_nodes_found,
+                        'node_depth': repeating_result.node_depth,
+                        'similar_node_depths': repeating_result.similar_node_depths
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Repeating node scoring failed: {e}")
+                component_scores['repeating_node'] = {'score': 0.0, 'details': {'error': str(e)}}
+        else:
+            component_scores['repeating_node'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+        
+        # 4. PARENT/CHILD QUALITY SCORING (Future implementation)
         if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
             try:
                 # TODO: Implement when parent/child scoring is ready
@@ -690,7 +807,7 @@ class AnswerScorer:
         else:
             component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 4. SEMANTIC SIMILARITY SCORING (Future implementation)
+        # 5. SEMANTIC SIMILARITY SCORING (Future implementation)
         if active_weights.get('semantic_similarity', 0) > 0 and reference_answers:
             try:
                 # TODO: Implement when semantic similarity is ready
@@ -702,7 +819,7 @@ class AnswerScorer:
         else:
             component_scores['semantic_similarity'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 5. LENGTH PENALTY (Simple implementation for now)
+        # 6. LENGTH PENALTY (Simple implementation for now)
         if active_weights.get('length_penalty', 0) > 0:
             try:
                 text = component_scores['confidence']['details'].get('text_generated', '')
@@ -718,47 +835,38 @@ class AnswerScorer:
             except:
                 component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'error'}}
         else:
-            component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'disabled'}}
+            # Don't include length_penalty in component_scores when weight is 0
+            pass
         
-        # 6. COHERENCE SCORING (Future implementation)
-        component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        # 7. COHERENCE SCORING (Future implementation)
+        if active_weights.get('coherence', 0) > 0:
+            component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
-        # 7. FACTUAL CONSISTENCY (Future implementation) 
-        component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        # 8. FACTUAL CONSISTENCY (Future implementation) 
+        if active_weights.get('factual_consistency', 0) > 0:
+            component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
         # Calculate weighted overall score
+        total_score = 0.0
         total_weight = 0.0
-        weighted_sum = 0.0
-        weights_used = {}
         
+        # FIXED: Only include components that have actual scores and weights > 0
         for component, weight in active_weights.items():
             if weight > 0 and component in component_scores:
                 score = component_scores[component]['score']
-                weighted_sum += score * weight
+                total_score += score * weight
                 total_weight += weight
-                weights_used[component] = weight
         
-        # Calculate final score
-        if total_weight > 0:
-            overall_score = weighted_sum / total_weight
+        # Normalize to 0-1 range if requested and weights are available
+        if normalize and total_weight > 0:
+            overall_score = total_score / total_weight
         else:
-            overall_score = 0.0
-        
-        # Normalize to 0-1 range if requested
-        if normalize:
-            overall_score = max(0.0, min(1.0, overall_score))
+            overall_score = total_score
         
         return {
             'overall_score': overall_score,
             'component_scores': component_scores,
-            'weights_used': weights_used,
-            'total_weight': total_weight,
-            'metadata': {
-                'question': question,
-                'path': path,
-                'candidate_paths': candidate_paths,
-                'normalized': normalize
-            }
+            'weights_used': active_weights
         }
     
     def get_simple_overall_score(
@@ -897,6 +1005,31 @@ def get_vote_score_simple(
     scorer = AnswerScorer(config)
     vote_result = scorer.get_vote_score(question, path, candidate_paths)
     return vote_result.vote_score or 1.0
+
+
+def get_repeating_node_score_simple(
+    question: str, 
+    path: str = "", 
+    node_depth: int = 0,
+    all_tree_paths: Optional[List[Tuple[str, int]]] = None,
+    config: Optional[PolicyConfig] = None
+) -> float:
+    """
+    Simple function to get repeating node score.
+    
+    Args:
+        question: The question being answered
+        path: Current path/partial answer
+        node_depth: Depth of current node in the tree
+        all_tree_paths: List of all paths in tree with depths [(path, depth), ...]
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        Repeating node score (1.0-2.0 range)
+    """
+    scorer = AnswerScorer(config)
+    result = scorer.get_repeating_node_score(question, path, node_depth, all_tree_paths)
+    return result.repeating_score
 
 
 def check_esm_service_status(config: Optional[PolicyConfig] = None) -> bool:

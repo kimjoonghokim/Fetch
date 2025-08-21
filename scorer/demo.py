@@ -240,6 +240,102 @@ def demo_vote_scoring():
         print("-" * 50)
 
 
+def demo_repeating_node_scoring():
+    """Demo the new repeating node scoring system."""
+    print("\n\n🔄 Repeating Node Scoring Demo")
+    print("=" * 50)
+    
+    # Simulate a tree with multiple reasoning paths at different depths
+    question = "What is 15 * 12?"
+    
+    # Simulate tree paths with depths - make them more similar for testing
+    tree_paths = [
+        ("Let me solve this step by step", 0),  # Root level
+        ("First, I'll break down 15 * 12", 1),  # Level 1
+        ("I can think of 15 as 10 + 5", 2),    # Level 2
+        ("So 15 * 12 = (10 + 5) * 12", 2),    # Level 2 - similar to above
+        ("This equals 10*12 + 5*12", 3),       # Level 3
+        ("10*12 = 120, 5*12 = 60", 4),        # Level 4
+        ("120 + 60 = 180", 5),                 # Level 5
+        ("Let me try a different approach", 1), # Level 1 - different reasoning
+        ("I know 15 * 10 = 150", 2),           # Level 2
+        ("And 15 * 2 = 30", 2),                # Level 2 - similar to above
+        ("So 15 * 12 = 150 + 30 = 180", 3),   # Level 3
+        ("I can think of 15 as 10 + 5", 4),    # Level 4 - EXACTLY THE SAME as line 3!
+        ("So 15 * 12 = (10 + 5) * 12", 5),    # Level 5 - EXACTLY THE SAME as line 4!
+        ("This equals 10*12 + 5*12", 6),       # Level 6 - EXACTLY THE SAME as line 5!
+        ("10*12 = 120, 5*12 = 60", 7),        # Level 7 - EXACTLY THE SAME as line 6!
+        ("120 + 60 = 180", 8),                 # Level 8 - EXACTLY THE SAME as line 7!
+    ]
+    
+    print(f"📝 Question: {question}")
+    print(f" Tree has {len(tree_paths)} paths at various depths")
+    
+    # Test repeating node scoring for different paths
+    test_paths = [
+        ("Let me solve this step by step", 0, "Root reasoning"),
+        ("I can think of 15 as 10 + 5", 2, "Early decomposition"),
+        ("I know 15 * 10 = 150", 2, "Alternative approach"),
+        ("120 + 60 = 180", 5, "Final calculation")
+    ]
+    
+    scorer = AnswerScorer()
+    
+    for path, depth, description in test_paths:
+        try:
+            print(f"\n🔍 Testing: {description}")
+            print(f"   Path: {path[:50]}...")
+            print(f"   Depth: {depth}")
+            
+            # Get repeating node score
+            repeating_result = scorer.get_repeating_node_score(
+                question, path, depth, tree_paths
+            )
+            
+            print(f"    Repeating Score: {repeating_result.repeating_score:.3f}")
+            print(f"   🚀 Early Boost: {repeating_result.early_boost:.3f}")
+            print(f"   📍 Similar Nodes Found: {repeating_result.similar_nodes_found}")
+            
+            if repeating_result.similar_node_depths:
+                print(f"   📊 Similar Node Depths: {repeating_result.similar_node_depths}")
+                
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+    
+    # Test overall scoring with repeating node component
+    print(f"\n🏆 Overall Scoring with Repeating Node Component")
+    print("-" * 50)
+    
+    test_path = "I can think of 15 as 10 + 5"
+    test_depth = 2
+    
+    try:
+        # Get overall score with repeating node weighting
+        weights_with_repeating = {
+            'confidence': 0.4,
+            'vote_score': 0.3,
+            'repeating_node': 0.3
+        }
+        
+        overall_result = scorer.get_overall_score(
+            question, test_path, 
+            all_tree_paths=tree_paths,
+            node_depth=test_depth,
+            weights=weights_with_repeating
+        )
+        
+        print(f" Path: {test_path[:50]}...")
+        print(f"🏆 Overall Score: {overall_result['overall_score']:.3f}")
+        print(f"📊 Component Breakdown:")
+        
+        for component, data in overall_result['component_scores'].items():
+            if data['score'] > 0:
+                print(f"   • {component}: {data['score']:.3f}")
+                
+    except Exception as e:
+        print(f"❌ Error in overall scoring: {e}")
+
+
 def check_esm():
     """Check if the ESM service is running."""
     print("🔍 Checking ESM Service Connection...")
@@ -304,6 +400,7 @@ def main():
     demo_custom_weights()
     demo_detailed_breakdown()
     demo_vote_scoring()
+    demo_repeating_node_scoring()  # NEW: Add repeating node demo
     
     print("\n\n🎉 Demo Complete!")
     print("=" * 60)
