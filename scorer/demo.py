@@ -110,11 +110,19 @@ def demo_detailed_breakdown():
     
     scorer = AnswerScorer()
     question = "What is 7*9?"
+    path = "Let me calculate 7 times 9"
+    candidates = [
+        "I'll calculate this multiplication",
+        "I'll work through this multiplication", 
+        "I'll solve this multiplication"
+    ]
     
     print(f"📝 Question: {question}")
+    print(f"Path: {path}")
+    print(f"Candidates: {candidates}")
     
     try:
-        result = scorer.get_overall_score(question, "", weights={"confidence": 0.8, "length_penalty": 0.2})
+        result = scorer.get_overall_score(question, path, candidate_paths=candidates, weights={"confidence": 0.7, "vote_score": 0.3, "length_penalty": 0.0, "parent_child_quality": 0.0})
         
         print(f"\n🏆 Overall Score: {result['overall_score']:.3f}")
         print(f"⚖️ Total Weight: {result['total_weight']:.1f}")
@@ -130,6 +138,10 @@ def demo_detailed_breakdown():
                     print(f"     Generated: '{data['details']['text_generated']}'")
                 if 'word_count' in data['details']:
                     print(f"     Word count: {data['details']['word_count']}")
+                if component == 'vote_score' and 'merge_count' in data['details']:
+                    print(f"     Merge Count: {data['details']['merge_count']}")
+                if component == 'vote_score' and 'cluster_sizes' in data['details']:
+                    print(f"     Cluster Sizes: {data['details']['cluster_sizes']}")
             else:
                 print(f"   • {component}: {status}")
         
