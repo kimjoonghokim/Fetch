@@ -336,6 +336,135 @@ def demo_repeating_node_scoring():
         print(f"❌ Error in overall scoring: {e}")
 
 
+def demo_parent_child_scoring():
+    """Demo the new parent-child quality scoring system."""
+    print("\n\n👨‍‍👧‍👦 Parent-Child Quality Scoring Demo")
+    print("=" * 50)
+    
+    # Simulate a tree with parent-child relationships
+    question = "What is the capital of France?"
+    
+    # Simulate tree structure with parent-child relationships
+    # Use reasoning paths that should produce DIFFERENT confidence levels
+    tree_structure = [
+        {
+            'path': "Let me answer this question",
+            'depth': 0,
+            'children': [1, 2],
+            'description': "Root reasoning",
+            'question': question
+        },
+        {
+            'path': "Paris",
+            'depth': 1,
+            'parent': 0,
+            'children': [3, 4],
+            'description': "High confidence: Single word answer (should be very confident)",
+            'question': question
+        },
+        {
+            'path': "I think it might be Paris, but I'm not sure. It could be Lyon or Marseille. I'm going to guess Paris based on what I remember, but I'm not confident in my answer at all.",
+            'depth': 1,
+            'parent': 0,
+            'children': [5, 6],
+            'description': "Low confidence: Long uncertain reasoning (should be less confident)",
+            'question': question
+        },
+        {
+            'path': "The Eiffel Tower is there",
+            'depth': 2,
+            'parent': 1,
+            'children': [],
+            'description': "Child of high confidence parent (should get high multiplier)",
+            'question': question
+        },
+        {
+            'path': "It's the seat of government",
+            'depth': 2,
+            'parent': 1,
+            'children': [],
+            'description': "Child of high confidence parent (should get high multiplier)",
+            'question': question
+        },
+        {
+            'path': "Other cities like Lyon are not the capital",
+            'depth': 2,
+            'parent': 2,
+            'children': [],
+            'description': "Child of low confidence parent (should get low multiplier)",
+            'question': question
+        },
+        {
+            'path': "The population would be significant",
+            'depth': 2,
+            'parent': 2,
+            'children': [],
+            'description': "Child of low confidence parent (should get low multiplier)",
+            'question': question
+        }
+    ]
+    
+    print(f"📝 Question: {question}")
+    print(f" Tree has {len(tree_structure)} nodes with parent-child relationships")
+    print("💡 Note: Using SHORT vs LONG reasoning paths to create confidence differences!")
+    
+    scorer = AnswerScorer()
+    
+    print("\n🔍 Testing Parent-Child Scoring for Each Node:")
+    print("-" * 60)
+    
+    for i, node in enumerate(tree_structure):
+        try:
+            print(f"\n📋 Node {i}: {node['description']}")
+            print(f"   Path: {node['path'][:60]}...")
+            print(f"   Depth: {node['depth']}")
+            
+            # Get parent and child nodes for this node
+            parent_nodes = []
+            child_nodes = []
+            
+            if 'parent' in node:
+                parent_idx = node['parent']
+                parent_nodes.append(tree_structure[parent_idx])
+                print(f"   👨‍‍👧‍👦 Parent: Node {parent_idx}")
+            
+            if 'children' in node and node['children']:
+                for child_idx in node['children']:
+                    child_nodes.append(tree_structure[child_idx])
+                print(f"   👶 Children: Nodes {node['children']}")
+            
+            # Get overall score with parent quality included
+            weights_with_parent_quality = {
+                'confidence': 0.4,
+                'vote_score': 0.25,
+                'repeating_node': 0.2,
+                'parent_quality': 0.15  # RENAMED: Parent quality scoring
+            }
+            
+            overall_result = scorer.get_overall_score(
+                question=question,
+                path=node['path'],
+                node=node,  # Pass the node object
+                parent_nodes=parent_nodes,
+                child_nodes=child_nodes,
+                weights=weights_with_parent_quality
+            )
+            
+            print(f"   🏆 Overall Score: {overall_result['overall_score']:.3f}")
+            print(f"   📊 Component Breakdown:")
+            
+            for component, data in overall_result['component_scores'].items():
+                if data['score'] > 0:
+                    print(f"      • {component}: {data['score']:.3f}")
+                    if 'parent_adjusted' in data['details']:
+                        print(f"        (Parent multiplier: {data['details']['parent_multiplier']:.3f})")
+                
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+    
+    print("\n" + "=" * 50)
+
+
 def check_esm():
     """Check if the ESM service is running."""
     print("🔍 Checking ESM Service Connection...")
@@ -401,6 +530,7 @@ def main():
     demo_detailed_breakdown()
     demo_vote_scoring()
     demo_repeating_node_scoring()  # NEW: Add repeating node demo
+    demo_parent_child_scoring()  # NEW: Add parent-child scoring demo
     
     print("\n\n🎉 Demo Complete!")
     print("=" * 60)

@@ -18,6 +18,8 @@ class ScoringMethod(Enum):
     # SEMANTIC_SIMILARITY = "semantic_similarity"
     # ENSEMBLE_VOTING = "ensemble_voting"
 
+#class ParentScore is not needed because Parent scores are already calculated using the existing ConfidenceScore class and they just become multipliers
+
 @dataclass
 class VoteScore:
     """Container for vote scoring results"""
@@ -289,13 +291,72 @@ class AnswerScorer:
     
     # Future methods for planned features:
     
-    def score_parent_child_quality(self, node, parent_nodes: List, child_nodes: List) -> float:
+    def score_parent_quality(self, node, parent_nodes: List, child_nodes: List) -> float:
         """
-        Score based on parent/child node quality.
-        TODO: Implement in future version.
+        Score based on parent node quality.
+        
+        Scoring logic:
+        - Parent's confidence score gets normalized to create visible multiplier differences
+        - HIGHER parent confidence = HIGHER multiplier (boosts children)
+        - LOWER parent confidence = LOWER multiplier (penalizes children)
+        - Formula: 0.5 + (parent_confidence * 0.5)
+        
+        Args:
+            node: Current node being scored
+            parent_nodes: List of parent nodes
+            child_nodes: List of child nodes (for future use)
+            
+        Returns:
+            Parent quality score (0.1 to 1.0)
         """
-        # Placeholder for future implementation
-        pass
+        if not parent_nodes:
+            return 1.0  # No parents = neutral multiplier
+        
+        try:
+            # Calculate average parent confidence score
+            parent_scores = []
+            
+            for parent in parent_nodes:
+                # Handle both dictionary objects and objects with attributes
+                if isinstance(parent, dict):
+                    if 'question' in parent and 'path' in parent:
+                        parent_confidence = self.get_confidence_score(
+                            question=parent['question'],
+                            path=parent['path'],
+                            method=ScoringMethod.CONFIDENCE_AVERAGE
+                        )
+                        parent_score = parent_confidence.avg_confidence or 0.0
+                        parent_scores.append(parent_score)
+                    else:
+                        parent_scores.append(0.5)
+                elif hasattr(parent, 'question') and hasattr(parent, 'path'):
+                    parent_confidence = self.get_confidence_score(
+                        question=parent.question,
+                        path=parent.path,
+                        method=ScoringMethod.CONFIDENCE_AVERAGE
+                    )
+                    parent_score = parent_confidence.avg_confidence or 0.0
+                    parent_scores.append(parent_score)
+                elif hasattr(parent, 'overall_score'):
+                    parent_scores.append(parent.overall_score)
+                else:
+                    parent_scores.append(0.5)
+            
+            # Calculate average parent confidence score
+            avg_parent_confidence = np.mean(parent_scores) if parent_scores else 0.5
+            
+            # Transform confidence to create correct multiplier direction
+            # Formula: 0.5 + (confidence * 0.5)
+            parent_multiplier = 0.5 + (avg_parent_confidence * 0.5)
+            
+            # Cap the multiplier to reasonable bounds (0.1 to 1.0)
+            parent_multiplier = max(0.1, min(1.0, parent_multiplier))
+            
+            return parent_multiplier
+            
+        except Exception as e:
+            print(f"Warning: Parent-child scoring failed: {e}")
+            return 1.0  # Fallback to neutral multiplier
     
     def score_semantic_similarity(self, answer: str, reference_answers: List[str]) -> float:
         """
@@ -718,10 +779,10 @@ class AnswerScorer:
         
         # Default weights for scoring components
         default_weights = {
-            'confidence': 0.5,          # Reduced from 0.6 to make room for repeating node
-            'vote_score': 0.3,          # Reduced from 0.4
-            'repeating_node': 0.2,      # NEW: Repeating node scoring
-            'parent_child_quality': 0.0,  # Future: weight = 0.3
+            'confidence': 0.4,          # Reduced to make room for parent quality
+            'vote_score': 0.25,         # Reduced slightly
+            'repeating_node': 0.2,      # Keep repeating node scoring
+            'parent_quality': 0.15,     # RENAMED: Parent quality scoring (was parent_child_quality)
             'semantic_similarity': 0.0,   # Future: weight = 0.2
             'length_penalty': 0.0,        # Future: weight = 0.1
             'coherence': 0.0,            # Future: weight = 0.2
@@ -796,16 +857,23 @@ class AnswerScorer:
         else:
             component_scores['repeating_node'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 4. PARENT/CHILD QUALITY SCORING (Future implementation)
-        if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
+        # 4. PARENT QUALITY SCORING (Now implemented!)
+        if active_weights.get('parent_quality', 0) > 0 and node is not None and parent_nodes:
             try:
-                # TODO: Implement when parent/child scoring is ready
-                pc_score = self.score_parent_child_quality(node, parent_nodes or [], child_nodes or [])
-                component_scores['parent_child_quality'] = {'score': pc_score or 0.0, 'details': {}}
-            except:
-                component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+                pc_score = self.score_parent_quality(node, parent_nodes, child_nodes or [])
+                component_scores['parent_quality'] = {
+                    'score': pc_score, 
+                    'details': {
+                        'parent_multiplier': pc_score,
+                        'num_parents': len(parent_nodes),
+                        'num_children': len(child_nodes or [])
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Parent quality scoring failed: {e}")
+                component_scores['parent_quality'] = {'score': 1.0, 'details': {'error': str(e)}}
         else:
-            component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+            component_scores['parent_quality'] = {'score': 1.0, 'details': {'status': 'disabled'}}
         
         # 5. SEMANTIC SIMILARITY SCORING (Future implementation)
         if active_weights.get('semantic_similarity', 0) > 0 and reference_answers:
@@ -850,10 +918,22 @@ class AnswerScorer:
         total_score = 0.0
         total_weight = 0.0
         
+        # Get parent multiplier for child scoring
+        parent_multiplier = component_scores.get('parent_quality', {}).get('score', 1.0)
+        
         # FIXED: Only include components that have actual scores and weights > 0
         for component, weight in active_weights.items():
             if weight > 0 and component in component_scores:
                 score = component_scores[component]['score']
+                
+                # Apply parent multiplier to child scores (except parent_quality itself)
+                if component != 'parent_quality' and parent_multiplier != 1.0:
+                    score = score * parent_multiplier
+                    # Update the component score to show the adjusted value
+                    component_scores[component]['score'] = score
+                    component_scores[component]['details']['parent_adjusted'] = True
+                    component_scores[component]['details']['parent_multiplier'] = parent_multiplier
+                
                 total_score += score * weight
                 total_weight += weight
         
