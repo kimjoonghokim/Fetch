@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 from sklearn.cluster import AgglomerativeClustering
+import uvicorn
 
 model_fpath = "xmu-nlp/simcse-large-gsm8k"
 tokenizer = AutoTokenizer.from_pretrained(model_fpath)
@@ -18,10 +19,10 @@ def compute_emb(texts):
     # Get the embeddings
     with torch.no_grad():
         embeddings = model(**inputs, output_hidden_states=True, return_dict=True).pooler_output
-        embeddings = F.normalize(embeddings, p=2, dim=-1)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
     return embeddings.cpu().numpy()
 
-def cluster(texts, d=0.1):
+def cluster(texts, d=0.5): #CHANGE THE d PARAMETER. HIGHER IT IS, LOOSER IT IS, LOWER = STRICTER (MERGE ONLY IF VERY SIMILAR)
     if len(texts) < 2:
         return [0]
     embs = compute_emb(texts)
@@ -41,3 +42,11 @@ class OutputPrediction(BaseModel):
 async def predict(input_text: InputText):
     labels = cluster(input_text.texts, input_text.d)
     return {"labels": labels}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "ESM clustering"}
+
+if __name__ == "__main__":
+    print("Starting ESM clustering server on port 8003...")
+    uvicorn.run(app, host="0.0.0.0", port=8003)

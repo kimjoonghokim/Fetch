@@ -12,11 +12,23 @@ class ScoringMethod(Enum):
     CONFIDENCE_MIN = "confidence_min"
     CONFIDENCE_GEOMETRIC = "confidence_geometric"
     PERPLEXITY = "perplexity"
+    REPEATING_NODE = "repeating_node"  # NEW: Repeating node scoring
     # Future methods to be implemented:
     # PARENT_CHILD_QUALITY = "parent_child_quality"
     # SEMANTIC_SIMILARITY = "semantic_similarity"
     # ENSEMBLE_VOTING = "ensemble_voting"
 
+#class ParentScore is not needed because Parent scores are already calculated using the existing ConfidenceScore class and they just become multipliers
+
+@dataclass
+class VoteScore:
+    """Container for vote scoring results"""
+    text: str
+    vote_score: Optional[float] = None
+    merge_count: int = 0  # Number of semantic similarity merges
+    cluster_sizes: Optional[List[int]] = None  # Sizes of merged clusters
+    semantic_groups: Optional[List[List[str]]] = None  # Groups of semantically similar texts
+    raw_response: Optional[Dict] = None
 
 @dataclass
 class ConfidenceScore:
@@ -31,6 +43,17 @@ class ConfidenceScore:
     top_logprobs: Optional[List[Dict]] = None
     raw_response: Optional[Dict] = None
 
+@dataclass
+class RepeatingNodeScore:
+    """Container for repeating node scoring results"""
+    text: str
+    repeating_score: Optional[float] = None
+    early_boost: float = 0.0  # Boost for appearing earlier
+    similar_nodes_found: int = 0  # Number of similar nodes found later
+    node_depth: int = 0  # Depth of this node in the tree
+    similar_node_depths: Optional[List[int]] = None  # Depths of similar nodes
+    raw_response: Optional[Dict] = None
+
 
 @dataclass
 class PolicyConfig:
@@ -42,6 +65,10 @@ class PolicyConfig:
     max_tokens: int = 512
     stop_tokens: List[str] = None
     
+    # ESM service configuration
+    esm_url: str = "http://127.0.0.1"
+    esm_port: int = 8003
+    
     def __post_init__(self):
         if self.stop_tokens is None:
             self.stop_tokens = ["\n"]
@@ -49,6 +76,10 @@ class PolicyConfig:
     @property
     def endpoint_url(self) -> str:
         return f"{self.url}:{self.port}/v1/completions"
+    
+    @property
+    def esm_endpoint_url(self) -> str:
+        return f"{self.esm_url}:{self.esm_port}/predict"
 
 
 class AnswerScorer:
@@ -260,13 +291,72 @@ class AnswerScorer:
     
     # Future methods for planned features:
     
-    def score_parent_child_quality(self, node, parent_nodes: List, child_nodes: List) -> float:
+    def score_parent_quality(self, node, parent_nodes: List, child_nodes: List) -> float:
         """
-        Score based on parent/child node quality.
-        TODO: Implement in future version.
+        Score based on parent node quality.
+        
+        Scoring logic:
+        - Parent's confidence score gets normalized to create visible multiplier differences
+        - HIGHER parent confidence = HIGHER multiplier (boosts children)
+        - LOWER parent confidence = LOWER multiplier (penalizes children)
+        - Formula: 0.5 + (parent_confidence * 0.5)
+        
+        Args:
+            node: Current node being scored
+            parent_nodes: List of parent nodes
+            child_nodes: List of child nodes (for future use)
+            
+        Returns:
+            Parent quality score (0.1 to 1.0)
         """
-        # Placeholder for future implementation
-        pass
+        if not parent_nodes:
+            return 1.0  # No parents = neutral multiplier
+        
+        try:
+            # Calculate average parent confidence score
+            parent_scores = []
+            
+            for parent in parent_nodes:
+                # Handle both dictionary objects and objects with attributes
+                if isinstance(parent, dict):
+                    if 'question' in parent and 'path' in parent:
+                        parent_confidence = self.get_confidence_score(
+                            question=parent['question'],
+                            path=parent['path'],
+                            method=ScoringMethod.CONFIDENCE_AVERAGE
+                        )
+                        parent_score = parent_confidence.avg_confidence or 0.0
+                        parent_scores.append(parent_score)
+                    else:
+                        parent_scores.append(0.5)
+                elif hasattr(parent, 'question') and hasattr(parent, 'path'):
+                    parent_confidence = self.get_confidence_score(
+                        question=parent.question,
+                        path=parent.path,
+                        method=ScoringMethod.CONFIDENCE_AVERAGE
+                    )
+                    parent_score = parent_confidence.avg_confidence or 0.0
+                    parent_scores.append(parent_score)
+                elif hasattr(parent, 'overall_score'):
+                    parent_scores.append(parent.overall_score)
+                else:
+                    parent_scores.append(0.5)
+            
+            # Calculate average parent confidence score
+            avg_parent_confidence = np.mean(parent_scores) if parent_scores else 0.5
+            
+            # Transform confidence to create correct multiplier direction
+            # Formula: 0.5 + (confidence * 0.5)
+            parent_multiplier = 0.5 + (avg_parent_confidence * 0.5)
+            
+            # Cap the multiplier to reasonable bounds (0.1 to 1.0)
+            parent_multiplier = max(0.1, min(1.0, parent_multiplier))
+            
+            return parent_multiplier
+            
+        except Exception as e:
+            print(f"Warning: Parent-child scoring failed: {e}")
+            return 1.0  # Fallback to neutral multiplier
     
     def score_semantic_similarity(self, answer: str, reference_answers: List[str]) -> float:
         """
@@ -284,6 +374,369 @@ class AnswerScorer:
         # Placeholder for future implementation
         pass
     
+    def check_esm_service(self) -> bool:
+        """
+        Check if ESM service is available.
+        
+        Returns:
+            True if ESM service is reachable, False otherwise
+        """
+        try:
+            import requests
+            
+            # Try to connect to the ESM service
+            response = requests.get(f"{self.config.esm_url}:{self.config.esm_port}/health", timeout=5)
+            return response.status_code == 200
+        except:
+            # Try a simple predict call with minimal data
+            try:
+                response = requests.post(
+                    self.config.esm_endpoint_url, 
+                    json={"texts": ["test"], "d": 0.1}, 
+                    timeout=5
+                )
+                return response.status_code == 200
+            except:
+                return False
+    
+    def get_vote_score(
+        self,
+        question: str,
+        path: str = "",
+        candidate_paths: Optional[List[str]] = None,
+        similarity_threshold: float = 0.15,
+        include_raw: bool = False
+    ) -> VoteScore:
+        """
+        Get vote score based on semantic similarity merges.
+        
+        Args:
+            question: The question being answered
+            path: Current path/partial answer
+            candidate_paths: List of candidate paths to compare against
+            similarity_threshold: Distance threshold for semantic clustering (0.0-1.0)
+            include_raw: Whether to include raw clustering results
+            
+        Returns:
+            VoteScore object with voting results
+        """
+        try:
+            if not candidate_paths:
+                # No candidates to compare against
+                return VoteScore(
+                    text=path,
+                    vote_score=1.0,
+                    merge_count=0,
+                    cluster_sizes=[1],
+                    semantic_groups=[[path]] if path else []
+                )
+            
+            # Add current path to candidates for clustering
+            all_paths = [path] + candidate_paths if path else candidate_paths
+            
+            # Check ESM service availability
+            esm_available = self.check_esm_service()
+            
+            # Perform semantic clustering
+            if esm_available:
+                clusters = self._cluster_semantically(all_paths, similarity_threshold)
+                clustering_method = "ESM"
+            else:
+                print("Warning: ESM service unavailable, using fallback clustering")
+                clusters = self._fallback_clustering_simple(all_paths, similarity_threshold)
+                clustering_method = "fallback"
+            
+            # Find the cluster containing the current path
+            current_cluster = None
+            for cluster in clusters:
+                if path in cluster:
+                    current_cluster = cluster
+                    break
+            
+            if not current_cluster:
+                # Current path not found in any cluster (shouldn't happen)
+                return VoteScore(
+                    text=path,
+                    vote_score=1.0,
+                    merge_count=0,
+                    cluster_sizes=[1],
+                    semantic_groups=[[path]] if path else []
+                )
+            
+            # Calculate vote score based on cluster size
+            cluster_size = len(current_cluster)
+            merge_count = max(0, cluster_size - 1)  # Number of potential merges
+            
+            # Base score is 1.0, each merge adds 0.1
+            vote_score = 1.0 + (merge_count * 0.1)
+            
+            # Cap the score at 2.0
+            vote_score = min(2.0, vote_score)
+            
+            # Get all cluster sizes for analysis
+            cluster_sizes = [len(cluster) for cluster in clusters]
+            
+            raw_response = {
+                "clusters": clusters, 
+                "threshold": similarity_threshold,
+                "clustering_method": clustering_method,
+                "esm_available": esm_available
+            } if include_raw else None
+            
+            return VoteScore(
+                text=path,
+                vote_score=vote_score,
+                merge_count=merge_count,
+                cluster_sizes=cluster_sizes,
+                semantic_groups=clusters,
+                raw_response=raw_response
+            )
+            
+        except Exception as e:
+            print(f"Error calculating vote score: {e}")
+            return VoteScore(
+                text=path,
+                vote_score=1.0,
+                merge_count=0,
+                cluster_sizes=[1],
+                semantic_groups=[[path]] if path else [],
+                raw_response={"error": str(e)}
+            )
+    
+    def _cluster_semantically(self, texts: List[str], threshold: float) -> List[List[str]]:
+        """
+        Perform semantic clustering on texts using ESM service.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold for clustering (0.0-1.0)
+            
+        Returns:
+            List of clusters, where each cluster is a list of similar texts
+        """
+        if len(texts) <= 1:
+            return [texts] if texts else []
+        
+        try:
+            # Call ESM service for semantic clustering
+            labels = self._call_esm_service(texts, threshold)
+            
+            # Group texts by cluster labels
+            clusters = {}
+            for text, label in zip(texts, labels):
+                if label not in clusters:
+                    clusters[label] = []
+                clusters[label].append(text)
+            
+            # Return list of clusters
+            return list(clusters.values())
+            
+        except Exception as e:
+            print(f"Error in ESM semantic clustering: {e}")
+            # Fallback: each text is its own cluster
+            return [[text] for text in texts]
+    
+    def _call_esm_service(self, texts: List[str], threshold: float) -> List[int]:
+        """
+        Call ESM service for semantic clustering.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold for clustering
+            
+        Returns:
+            List of cluster labels for each text
+        """
+        try:
+            import requests
+            
+            # ESM service endpoint from configuration
+            url = self.config.esm_endpoint_url
+            
+            # Prepare payload
+            payload = {
+                "texts": texts,
+                "d": threshold
+            }
+            
+            # Make request to ESM service
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            # Extract cluster labels
+            result = response.json()
+            return result["labels"]
+            
+        except Exception as e:
+            print(f"ESM service call failed: {e}")
+            # Fallback to simple clustering if ESM service is unavailable
+            return self._fallback_clustering(texts, threshold)
+    
+    def _fallback_clustering(self, texts: List[str], threshold: float) -> List[int]:
+        """
+        Fallback clustering method when ESM service is unavailable.
+        Uses simple word overlap similarity.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Similarity threshold for clustering
+            
+        Returns:
+            List of cluster labels for each text
+        """
+        if len(texts) <= 1:
+            return [0] if texts else []
+        
+        clusters = []
+        used_indices = set()
+        next_label = 0
+        
+        for i, text1 in enumerate(texts):
+            if i in used_indices:
+                continue
+            
+            # Start a new cluster
+            cluster_label = next_label
+            next_label += 1
+            clusters.append(cluster_label)
+            used_indices.add(i)
+            
+            # Find similar texts
+            for j, text2 in enumerate(texts[i+1:], i+1):
+                if j in used_indices:
+                    continue
+                
+                # Simple similarity check
+                similarity = self._calculate_text_similarity(text1, text2)
+                if similarity >= threshold:
+                    clusters.append(cluster_label)
+                    used_indices.add(j)
+                else:
+                    clusters.append(next_label)
+                    next_label += 1
+                    used_indices.add(j)
+        
+        return clusters
+    
+    def _fallback_clustering_simple(self, texts: List[str], threshold: float) -> List[List[str]]:
+        """
+        Simple fallback clustering when ESM service is unavailable.
+        Each text gets its own cluster.
+        
+        Args:
+            texts: List of text strings to cluster
+            threshold: Distance threshold (ignored in fallback)
+            
+        Returns:
+            List of clusters, where each cluster contains one text
+        """
+        return [[text] for text in texts]
+    
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+        """
+        Calculate similarity between two texts.
+        This is a simplified version - in practice, use the ESM service.
+        
+        Args:
+            text1: First text
+            text2: Second text
+            
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        # Simple word overlap similarity as fallback
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def get_repeating_node_score(
+        self,
+        question: str,
+        path: str = "",
+        node_depth: int = 0,
+        all_tree_paths: Optional[List[Tuple[str, int]]] = None,
+        similarity_threshold: float = 0.15,
+        early_boost_factor: float = 0.3,  # Increased from 0.1 to 0.3 for more noticeable boosts
+        include_raw: bool = False
+    ) -> RepeatingNodeScore:
+        """
+        Calculate repeating node score based on semantic similarity with earlier reasoning.
+        
+        Scoring logic:
+        - Base score: 1.0
+        - Early boost: (1 + num_similar_nodes) * early_boost_factor * depth_advantage
+        - Depth advantage: (max_depth - current_depth) / max_depth
+        - Later nodes get minimal boost, earlier nodes get larger boost
+        """
+        if not all_tree_paths or len(all_tree_paths) < 2:
+            return RepeatingNodeScore(
+                text=path,
+                repeating_score=1.0,
+                early_boost=0.0,
+                similar_nodes_found=0,
+                node_depth=node_depth
+            )
+        
+        # DEBUG: Print all tree paths for inspection
+        print(f"\n🔍 DEBUG: Analyzing repeating node score for path: '{path}' at depth {node_depth}")
+        print(f"📊 All tree paths ({len(all_tree_paths)} total):")
+        for i, (p, d) in enumerate(all_tree_paths):
+            print(f"   [{i}] Depth {d}: '{p}'")
+        
+        similar_nodes = []
+        max_depth = max(depth for _, depth in all_tree_paths)
+        
+        # Find semantically similar nodes that appear later in the tree
+        for other_path, other_depth in all_tree_paths:
+            if other_depth > node_depth:  # Only look at deeper nodes
+                similarity = self._calculate_text_similarity(path, other_path)
+                if similarity >= similarity_threshold:
+                    similar_nodes.append((other_path, other_depth, similarity))
+        
+        if not similar_nodes:
+            return RepeatingNodeScore(
+                text=path,
+                repeating_score=1.0,
+                early_boost=0.0,
+                similar_nodes_found=0,
+                node_depth=node_depth
+            )
+        
+        # Calculate early boost based on depth advantage
+        num_similar = len(similar_nodes)
+        depth_advantage = (max_depth - node_depth) / max_depth  # Higher for shallower nodes
+        
+        # Early boost formula: (1 + num_similar) * early_boost_factor * depth_advantage
+        early_boost = (1 + num_similar) * early_boost_factor * depth_advantage
+        
+        # Final score: base + early boost
+        final_score = 1.0 + early_boost
+        
+        # Store similar node depths for debugging
+        similar_depths = [depth for _, depth, _ in similar_nodes]
+        
+        print(f"📊 Similar nodes found: {num_similar}")
+        print(f"   • Depth advantage: {depth_advantage:.3f}")
+        print(f"   • Early boost: {early_boost:.3f}")
+        print(f"   • Final score: {final_score:.3f}")
+        
+        return RepeatingNodeScore(
+            text=path,
+            repeating_score=final_score,
+            early_boost=early_boost,
+            similar_nodes_found=num_similar,
+            node_depth=node_depth,
+            similar_node_depths=similar_depths,
+            raw_response={"similar_nodes": similar_nodes} if include_raw else None
+        )
+    
     def get_overall_score(
         self,
         question: str,
@@ -292,6 +745,9 @@ class AnswerScorer:
         parent_nodes: Optional[List] = None,
         child_nodes: Optional[List] = None,
         reference_answers: Optional[List[str]] = None,
+        candidate_paths: Optional[List[str]] = None,
+        all_tree_paths: Optional[List[Tuple[str, int]]] = None,  # NEW: for repeating node scoring
+        node_depth: int = 0,  # NEW: depth of current node
         weights: Optional[Dict[str, float]] = None,
         normalize: bool = True
     ) -> Dict[str, Union[float, Dict]]:
@@ -308,6 +764,9 @@ class AnswerScorer:
             parent_nodes: List of parent nodes for quality scoring - Future use
             child_nodes: List of child nodes for quality scoring - Future use
             reference_answers: Reference answers for similarity scoring - Future use
+            candidate_paths: List of candidate paths for vote scoring
+            all_tree_paths: List of all paths in tree with depths for repeating node scoring
+            node_depth: Depth of current node in the tree for repeating node scoring
             weights: Custom weights for different scoring components
             normalize: Whether to normalize the final score to 0-1 range
             
@@ -316,17 +775,14 @@ class AnswerScorer:
             - 'overall_score': Final weighted score (0-1 if normalized)
             - 'component_scores': Individual scores from each method
             - 'weights_used': The weights applied to each component
-            
-        Example:
-            scorer = AnswerScorer()
-            result = scorer.get_overall_score("What is 2+2?", "")
-            print(f"Overall score: {result['overall_score']:.3f}")
         """
         
         # Default weights for scoring components
         default_weights = {
-            'confidence': 1.0,          # Currently implemented
-            'parent_child_quality': 0.0,  # Future: weight = 0.3
+            'confidence': 0.4,          # Reduced to make room for parent quality
+            'vote_score': 0.25,         # Reduced slightly
+            'repeating_node': 0.2,      # Keep repeating node scoring
+            'parent_quality': 0.15,     # RENAMED: Parent quality scoring (was parent_child_quality)
             'semantic_similarity': 0.0,   # Future: weight = 0.2
             'length_penalty': 0.0,        # Future: weight = 0.1
             'coherence': 0.0,            # Future: weight = 0.2
@@ -356,18 +812,70 @@ class AnswerScorer:
             print(f"Warning: Confidence scoring failed: {e}")
             component_scores['confidence'] = {'score': 0.0, 'details': {'error': str(e)}}
         
-        # 2. PARENT/CHILD QUALITY SCORING (Future implementation)
-        if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
+        # 2. VOTE SCORING (Based on semantic similarity merges)
+        if active_weights.get('vote_score', 0) > 0:
             try:
-                # TODO: Implement when parent/child scoring is ready
-                pc_score = self.score_parent_child_quality(node, parent_nodes or [], child_nodes or [])
-                component_scores['parent_child_quality'] = {'score': pc_score or 0.0, 'details': {}}
-            except:
-                component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+                vote_result = self.get_vote_score(question, path, candidate_paths)
+                # Normalize vote score from 1.0-2.0 range to 0.0-1.0 range
+                normalized_vote_score = (vote_result.vote_score - 1.0)  # Now 0.0-1.0
+                component_scores['vote_score'] = {
+                    'score': normalized_vote_score,
+                    'details': {
+                        'raw_vote_score': vote_result.vote_score,
+                        'merge_count': vote_result.merge_count,
+                        'cluster_sizes': vote_result.cluster_sizes,
+                        'semantic_groups': vote_result.semantic_groups
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Vote scoring failed: {e}")
+                component_scores['vote_score'] = {'score': 0.0, 'details': {'error': str(e)}}
         else:
-            component_scores['parent_child_quality'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+            component_scores['vote_score'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 3. SEMANTIC SIMILARITY SCORING (Future implementation)
+        # 3. REPEATING NODE SCORING (NEW: Rewards earlier reasoning when similar reasoning appears later)
+        if active_weights.get('repeating_node', 0) > 0:
+            try:
+                repeating_result = self.get_repeating_node_score(
+                    question, path, node_depth, all_tree_paths
+                )
+                # Normalize repeating node score from 1.0-2.0 range to 0.0-1.0 range
+                normalized_repeating_score = (repeating_result.repeating_score - 1.0)  # Now 0.0-1.0
+                component_scores['repeating_node'] = {
+                    'score': normalized_repeating_score,
+                    'details': {
+                        'raw_repeating_score': repeating_result.repeating_score,
+                        'early_boost': repeating_result.early_boost,
+                        'similar_nodes_found': repeating_result.similar_nodes_found,
+                        'node_depth': repeating_result.node_depth,
+                        'similar_node_depths': repeating_result.similar_node_depths
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Repeating node scoring failed: {e}")
+                component_scores['repeating_node'] = {'score': 0.0, 'details': {'error': str(e)}}
+        else:
+            component_scores['repeating_node'] = {'score': 0.0, 'details': {'status': 'disabled'}}
+        
+        # 4. PARENT QUALITY SCORING (Now implemented!)
+        if active_weights.get('parent_quality', 0) > 0 and node is not None and parent_nodes:
+            try:
+                pc_score = self.score_parent_quality(node, parent_nodes, child_nodes or [])
+                component_scores['parent_quality'] = {
+                    'score': pc_score, 
+                    'details': {
+                        'parent_multiplier': pc_score,
+                        'num_parents': len(parent_nodes),
+                        'num_children': len(child_nodes or [])
+                    }
+                }
+            except Exception as e:
+                print(f"Warning: Parent quality scoring failed: {e}")
+                component_scores['parent_quality'] = {'score': 1.0, 'details': {'error': str(e)}}
+        else:
+            component_scores['parent_quality'] = {'score': 1.0, 'details': {'status': 'disabled'}}
+        
+        # 5. SEMANTIC SIMILARITY SCORING (Future implementation)
         if active_weights.get('semantic_similarity', 0) > 0 and reference_answers:
             try:
                 # TODO: Implement when semantic similarity is ready
@@ -379,7 +887,7 @@ class AnswerScorer:
         else:
             component_scores['semantic_similarity'] = {'score': 0.0, 'details': {'status': 'disabled'}}
         
-        # 4. LENGTH PENALTY (Simple implementation for now)
+        # 6. LENGTH PENALTY (Simple implementation for now)
         if active_weights.get('length_penalty', 0) > 0:
             try:
                 text = component_scores['confidence']['details'].get('text_generated', '')
@@ -395,52 +903,57 @@ class AnswerScorer:
             except:
                 component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'error'}}
         else:
-            component_scores['length_penalty'] = {'score': 1.0, 'details': {'status': 'disabled'}}
+            # Don't include length_penalty in component_scores when weight is 0
+            pass
         
-        # 5. COHERENCE SCORING (Future implementation)
-        component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        # 7. COHERENCE SCORING (Future implementation)
+        if active_weights.get('coherence', 0) > 0:
+            component_scores['coherence'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
-        # 6. FACTUAL CONSISTENCY (Future implementation) 
-        component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
+        # 8. FACTUAL CONSISTENCY (Future implementation) 
+        if active_weights.get('factual_consistency', 0) > 0:
+            component_scores['factual_consistency'] = {'score': 0.0, 'details': {'status': 'not_implemented'}}
         
         # Calculate weighted overall score
+        total_score = 0.0
         total_weight = 0.0
-        weighted_sum = 0.0
-        weights_used = {}
         
+        # Get parent multiplier for child scoring
+        parent_multiplier = component_scores.get('parent_quality', {}).get('score', 1.0)
+        
+        # FIXED: Only include components that have actual scores and weights > 0
         for component, weight in active_weights.items():
             if weight > 0 and component in component_scores:
                 score = component_scores[component]['score']
-                weighted_sum += score * weight
+                
+                # Apply parent multiplier to child scores (except parent_quality itself)
+                if component != 'parent_quality' and parent_multiplier != 1.0:
+                    score = score * parent_multiplier
+                    # Update the component score to show the adjusted value
+                    component_scores[component]['score'] = score
+                    component_scores[component]['details']['parent_adjusted'] = True
+                    component_scores[component]['details']['parent_multiplier'] = parent_multiplier
+                
+                total_score += score * weight
                 total_weight += weight
-                weights_used[component] = weight
         
-        # Calculate final score
-        if total_weight > 0:
-            overall_score = weighted_sum / total_weight
+        # Normalize to 0-1 range if requested and weights are available
+        if normalize and total_weight > 0:
+            overall_score = total_score / total_weight
         else:
-            overall_score = 0.0
-        
-        # Normalize to 0-1 range if requested
-        if normalize:
-            overall_score = max(0.0, min(1.0, overall_score))
+            overall_score = total_score
         
         return {
             'overall_score': overall_score,
             'component_scores': component_scores,
-            'weights_used': weights_used,
-            'total_weight': total_weight,
-            'metadata': {
-                'question': question,
-                'path': path,
-                'normalized': normalize
-            }
+            'weights_used': active_weights
         }
     
     def get_simple_overall_score(
         self,
         question: str,
         path: str = "",
+        candidate_paths: Optional[List[str]] = None,
         custom_weights: Optional[Dict[str, float]] = None
     ) -> float:
         """
@@ -449,6 +962,7 @@ class AnswerScorer:
         Args:
             question: The question being answered
             path: Current path/partial answer  
+            candidate_paths: List of candidate paths for vote scoring
             custom_weights: Optional custom weights for scoring components
             
         Returns:
@@ -456,10 +970,10 @@ class AnswerScorer:
             
         Example:
             scorer = AnswerScorer()
-            score = scorer.get_simple_overall_score("What is 2+2?", "")
+            score = scorer.get_simple_overall_score("What is 2+2?", "", ["Let me solve", "I'll calculate"])
             print(f"Score: {score:.3f}")
         """
-        result = self.get_overall_score(question, path, weights=custom_weights)
+        result = self.get_overall_score(question, path, candidate_paths=candidate_paths, weights=custom_weights)
         return result['overall_score']
 
 
@@ -504,6 +1018,7 @@ def get_overall_answer_score(
     question: str, 
     path: str = "", 
     config: Optional[PolicyConfig] = None,
+    candidate_paths: Optional[List[str]] = None,
     weights: Optional[Dict[str, float]] = None
 ) -> float:
     """
@@ -514,6 +1029,7 @@ def get_overall_answer_score(
         question: The question being answered
         path: Current path/partial answer
         config: Policy configuration (uses defaults if None)
+        candidate_paths: List of candidate paths for vote scoring
         weights: Custom weights for scoring components
         
     Returns:
@@ -523,12 +1039,97 @@ def get_overall_answer_score(
         # Basic usage
         score = get_overall_answer_score("What is 2+2?", "")
         
+        # With candidate paths for vote scoring
+        candidates = ["Let me solve this", "I'll calculate step by step"]
+        score = get_overall_answer_score("What is 2+2?", "", candidate_paths=candidates)
+        
         # With custom weights (when more components are available)
-        custom_weights = {"confidence": 0.7, "length_penalty": 0.3}
-        score = get_overall_answer_score("What is 2+2?", "", weights=custom_weights)
+        custom_weights = {"confidence": 0.7, "vote_score": 0.3}
+        score = get_overall_answer_score("What is 2+2?", "", candidate_paths=candidates, weights=custom_weights)
     """
     scorer = AnswerScorer(config)
-    return scorer.get_simple_overall_score(question, path, weights)
+    return scorer.get_simple_overall_score(question, path, candidate_paths, weights)
+
+
+def get_vote_score_simple(
+    question: str, 
+    path: str = "", 
+    candidate_paths: Optional[List[str]] = None,
+    config: Optional[PolicyConfig] = None
+) -> float:
+    """
+    Get a simple vote score (1.0-2.0) based on semantic similarity merges.
+    
+    Args:
+        question: The question being answered
+        path: Current path/partial answer
+        candidate_paths: List of candidate paths to compare against
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        Vote score between 1.0 and 2.0 (higher = more merges)
+        
+    Example:
+        # Basic usage
+        score = get_vote_score_simple("What is 2+2?", "")
+        
+        # With candidate paths
+        candidates = ["Let me solve this", "I'll calculate step by step"]
+        score = get_vote_score_simple("What is 2+2?", "", candidates)
+        print(f"Vote score: {score:.3f}")  # Will be 1.0-2.0
+        
+        # For detailed information, use AnswerScorer directly:
+        # scorer = AnswerScorer()
+        # details = scorer.get_vote_score(question, path, candidates, include_raw=True)
+    """
+    scorer = AnswerScorer(config)
+    vote_result = scorer.get_vote_score(question, path, candidate_paths)
+    return vote_result.vote_score or 1.0
+
+
+def get_repeating_node_score_simple(
+    question: str, 
+    path: str = "", 
+    node_depth: int = 0,
+    all_tree_paths: Optional[List[Tuple[str, int]]] = None,
+    config: Optional[PolicyConfig] = None
+) -> float:
+    """
+    Simple function to get repeating node score.
+    
+    Args:
+        question: The question being answered
+        path: Current path/partial answer
+        node_depth: Depth of current node in the tree
+        all_tree_paths: List of all paths in tree with depths [(path, depth), ...]
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        Repeating node score (1.0-2.0 range)
+    """
+    scorer = AnswerScorer(config)
+    result = scorer.get_repeating_node_score(question, path, node_depth, all_tree_paths)
+    return result.repeating_score
+
+
+def check_esm_service_status(config: Optional[PolicyConfig] = None) -> bool:
+    """
+    Check if ESM service is available.
+    
+    Args:
+        config: Policy configuration (uses defaults if None)
+        
+    Returns:
+        True if ESM service is reachable, False otherwise
+        
+    Example:
+        if check_esm_service_status():
+            print("ESM service is available")
+        else:
+            print("ESM service is unavailable")
+    """
+    scorer = AnswerScorer(config)
+    return scorer.check_esm_service()
 
 
 # Example usage and testing functions
