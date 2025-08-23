@@ -2,17 +2,10 @@ import os
 import json
 import pickle
 import numpy as np
-import requests
-from tqdm import tqdm
+import torch
 from typing import List, Dict, Optional, Tuple
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import sys
-import torch
-
-# Remove dependency on external scoring system for now
-# sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'scorer'))
-# from scoring import get_overall_answer_score, AnswerScorer
 
 # SSDP Configuration
 LIMIT = 50                    # Maximum search iterations
@@ -25,20 +18,10 @@ SIMILARITY_THRESHOLD = 0.85   # Similarity threshold for merging nodes
 PRUNE_FREQUENCY = 3           # Prune every N iterations
 MAX_DEPTH = 10               # Maximum reasoning depth
 
-# File paths
-data_fpath = "../../dataset/toy.jsonl"
-output_fpath = f"test_gsm8k_ssdp_p{MAX_PARALLEL_PATHS}_t{OVERALL_SCORE_THRESHOLD}.pkl"
-policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k"
-
 # Task dependent functions
 def assert_end(text, tokenizer):
     """Check if the reasoning has reached a conclusion."""
-    return True if "The answer is" in text and text.endswith(tokenizer.eos_token) else False
-
-# Remove hardcoded tokenizer loading - now passed as parameter
-# from transformers import AutoTokenizer
-# tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
-MAX_LEN_PER_STEP = 256
+    return "The answer is" in text
 
 def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
     """Call the policy model to generate next step."""
@@ -48,7 +31,7 @@ def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
     # Tokenize input with explicit attention mask
     inputs = tokenizer(query, return_tensors="pt", truncation=True, max_length=512, padding=True)
     
-    # Ensure attention mask is properly set and handle pad/eos token conflicts
+    # Ensure attention mask is properly set
     if "attention_mask" not in inputs:
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
     
@@ -56,10 +39,9 @@ def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
     device = next(model.parameters()).device
     inputs = {k: v.to(device) for k, v in inputs.items()}
     
-    # Generate with model - handle attention mask properly
+    # Generate with model
     with torch.no_grad():
         try:
-            # Try with attention mask first
             outputs = model.generate(
                 inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
@@ -70,16 +52,8 @@ def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
                 eos_token_id=tokenizer.eos_token_id
             )
         except Exception as e:
-            # Fallback without attention mask if there are issues
-            print(f"Warning: Using fallback generation method: {e}")
-            outputs = model.generate(
-                inputs["input_ids"],
-                max_new_tokens=512,
-                temperature=temperature,
-                do_sample=True if temperature > 0 else False,
-                pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id
-            )
+            print(f"Error in model generation: {e}")
+            return ""
     
     # Decode output
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -96,7 +70,7 @@ def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
 
 class SSDPNode:
     """
-    Enhanced node for SSDP algorithm with comprehensive scoring from scoring.py.
+    Enhanced node for SSDP algorithm with comprehensive scoring.
     """
     
     def __init__(self, content, parent, timestep, tree, is_leaf=False):
@@ -114,7 +88,6 @@ class SSDPNode:
         self.semantic_embedding = None
         self.merged_nodes = []  # Track nodes that were merged into this one
         self.pruned = False
-        self.fully_expanded = False  # Track if node has been fully expanded
         
         # Calculate scores
         self._calculate_scores()
@@ -217,7 +190,7 @@ class SSDPNode:
 
 class SSDPTree:
     """
-    SSDP Tree with semantic similarity-based dynamic pruning using scoring.py.
+    SSDP Tree with semantic similarity-based dynamic pruning.
     """
     
     def __init__(self, question, answer):
@@ -225,8 +198,8 @@ class SSDPTree:
         self.answer = answer
         self.all_nodes = []
         self.pruned_nodes = []
-        # Initialize root with first step generation
-        self.root = SSDPNode("", None, 0, self)
+        # Start with root having None content (like the old working code)
+        self.root = SSDPNode(None, None, 0, self)
         self.all_nodes.append(self.root)
         
         # Semantic similarity components
@@ -269,8 +242,9 @@ class SSDPTree:
         if timestep is None:
             timestep = self.return_timestep()
         
+        # Filter out root node (timestep 0) to prevent it from being expanded
         return [node for node in self.all_nodes 
-                if node.timestep == timestep and not node.pruned and not node.is_leaf]
+                if node.timestep == timestep and not node.pruned and not node.is_leaf and node.timestep > 0]
     
     def get_nodes_to_expand(self, max_paths=MAX_PARALLEL_PATHS):
         """Get the best nodes to expand based on overall scores."""
@@ -281,16 +255,13 @@ class SSDPTree:
             prev_timestep = self.return_timestep() - 1
             if prev_timestep >= 0:
                 current_level_nodes = self.get_active_nodes_at_level(prev_timestep)
-        
-        # Filter out nodes that shouldn't be expanded
-        expandable_nodes = [node for node in current_level_nodes 
-                           if node.content is not None and not node.is_leaf and not node.fully_expanded]
-        
-        if not expandable_nodes:
-            return []
+            
+            # If still no nodes, check if we can expand from root (timestep 0)
+            if not current_level_nodes and self.root.content is not None:
+                current_level_nodes = [self.root]
         
         # Sort by overall score and take top candidates
-        scored_nodes = [(node, node.get_primary_score()) for node in expandable_nodes]
+        scored_nodes = [(node, node.get_primary_score()) for node in current_level_nodes]
         scored_nodes.sort(key=lambda x: x[1], reverse=True)
         
         return [node for node, score in scored_nodes[:max_paths]]
@@ -390,13 +361,11 @@ def fix_value(node, tokenizer):
             node.confidence_score = 0.0
     
     if (node.content is not None and 
-        (len(node.content) == 0 or 
-         len(tokenizer.tokenize(node.content)) > MAX_LEN_PER_STEP)):
+        (len(node.content) == 0 or len(node.content) > 1024)):
         node.overall_score = 0.0
         node.confidence_score = 0.0
     
     if (node.content and 
-        node.content.endswith(tokenizer.eos_token) and 
         not assert_end(node.content, tokenizer)):
         node.overall_score = 0.0
         node.confidence_score = 0.0
@@ -414,16 +383,20 @@ def ssdp_worker(tree, model, tokenizer):
     
     print(f"Starting SSDP for question: {question[:50]}...")
     
-    # Handle initial state - generate first step for root
-    if not tree.root.content or tree.root.content == "":
-        print("Generating initial step...")
+    # Handle initial state - generate first step for root if it has no content
+    if tree.root.content is None:
+        print("Generating initial reasoning step...")
         try:
             initial_step = call_policy(question, "", model, tokenizer)
-            tree.root.content = initial_step
-            print(f"Initial step: {initial_step[:100]}...")
+            if initial_step and initial_step.strip():
+                tree.root.content = initial_step
+                print(f"Initial step: {initial_step[:100]}...")
+            else:
+                print("Failed to generate initial step, using placeholder")
+                tree.root.content = "Let me think about this step by step."
         except Exception as e:
             print(f"Error generating initial step: {e}")
-            return tree
+            tree.root.content = "Let me think about this step by step."
     
     while iteration < LIMIT:
         # Get nodes to expand
@@ -433,41 +406,33 @@ def ssdp_worker(tree, model, tokenizer):
         
         if not nodes_to_expand:
             print(f"No nodes to expand at iteration {iteration}")
-            print("Available nodes:", [(n.content[:30] if n.content else "None", n.is_leaf, n.pruned, n.fully_expanded) for n in tree.all_nodes if not n.pruned])
+            print("Available nodes:", [(n.content[:30] if n.content else "None", n.timestep, n.is_leaf, n.pruned) for n in tree.all_nodes if not n.pruned])
             break
         
         # Check if we've reached maximum depth
-        if nodes_to_expand:
-            current_depth = max([node.get_depth() for node in nodes_to_expand])
-            if current_depth >= MAX_DEPTH:
-                print(f"Reached maximum depth {MAX_DEPTH}")
-                break
-        else:
-            print(f"No nodes to expand at iteration {iteration}")
+        current_depth = max([node.get_depth() for node in nodes_to_expand])
+        if current_depth >= MAX_DEPTH:
+            print(f"Reached maximum depth {MAX_DEPTH}")
             break
         
         # Expand each selected node
         for node in nodes_to_expand:
             if node.pruned or node.is_leaf:
-                print(f"Skipping node (pruned: {node.pruned}, is_leaf: {node.is_leaf})")
                 continue
             
             # Determine expansion budget for this node
             budget = tree.adaptive_expansion_budget(node)
-            print(f"Expanding node with budget {budget}")
             
             # Expand node multiple times
             for _ in range(budget):
                 try:
                     # Generate next step
                     path = node.print_path()
-                    print(f"Generating next step for path: {path[:50]}...")
                     next_step = call_policy(question, path, model, tokenizer)
                     
                     # Create new node
                     is_terminal = assert_end(next_step, tokenizer)
                     new_node = tree.add_node(next_step, node, is_terminal)
-                    print(f"Created new node (terminal: {is_terminal}): {next_step[:50]}...")
                     
                     # Apply validation rules
                     fix_value(new_node, tokenizer)
@@ -475,9 +440,6 @@ def ssdp_worker(tree, model, tokenizer):
                 except Exception as e:
                     print(f"Error expanding node: {e}")
                     continue
-            
-            # Mark node as fully expanded after using its budget
-            node.fully_expanded = True
         
         # Fit vectorizer after first expansion
         if iteration == 0:
@@ -527,53 +489,4 @@ def run_ssdp_experiment(question, expected_answer, model, tokenizer):
         'search_steps': len(result_tree.all_nodes),
         'tokens_used': sum(len(tokenizer.tokenize(node.content)) for node in result_tree.all_nodes if node.content),
         'raw_tree': result_tree
-    }
-
-#### Main Execution ####
-
-def main():
-    """Main execution function."""
-    print("Loading dataset...")
-    dataset = []
-    with open(data_fpath, "r") as f:
-        for line in f.readlines():
-            dataset.append(json.loads(line))
-    
-    print(f"Creating {len(dataset)} SSDP trees...")
-    problems = []
-    for instance in dataset:
-        question = instance["question"]
-        answer = instance["answer"]
-        problem = SSDPTree(question, answer)
-        problems.append(problem)
-    
-    print("Starting SSDP search...")
-    
-    # Process problems (can be parallelized if needed)
-    processed_problems = []
-    for problem in tqdm(problems, desc="SSDP Search"):
-        try:
-            result = ssdp_worker(problem)
-            processed_problems.append(result)
-        except Exception as e:
-            print(f"Error processing problem: {e}")
-            processed_problems.append(problem)  # Keep original
-    
-    print(f"Saving results to {output_fpath}")
-    pickle.dump(processed_problems, open(output_fpath, "wb"))
-    
-    # Print summary statistics
-    print("\n=== SSDP Search Complete ===")
-    total_nodes = sum(len(p.all_nodes) for p in processed_problems)
-    total_expansions = sum(p.total_expansions for p in processed_problems)
-    total_merges = sum(p.total_merges for p in processed_problems)
-    total_prunes = sum(p.total_prunes for p in processed_problems)
-    
-    print(f"Total nodes created: {total_nodes}")
-    print(f"Total expansions: {total_expansions}")
-    print(f"Total merges: {total_merges}")
-    print(f"Total prunes: {total_prunes}")
-    print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
-
-if __name__ == "__main__":
-    main() 
+    } 
