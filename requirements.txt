@@ -24,3 +24,4 @@ datasets>=2.10.0       # if you use Hugging Face datasets for loading GSM8K/etc.
 # Other
 ray>=2.7.0
 accelerate>=1.9.0
+jsonlines

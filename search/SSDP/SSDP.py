@@ -8,10 +8,11 @@ from typing import List, Dict, Optional, Tuple
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
+import torch
 
-# Add the scorer directory to the path
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'scorer'))
-from scoring import get_overall_answer_score, AnswerScorer
+# Remove dependency on external scoring system for now
+# sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'scorer'))
+# from scoring import get_overall_answer_score, AnswerScorer
 
 # SSDP Configuration
 LIMIT = 50                    # Maximum search iterations
@@ -30,30 +31,66 @@ output_fpath = f"test_gsm8k_ssdp_p{MAX_PARALLEL_PATHS}_t{OVERALL_SCORE_THRESHOLD
 policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k"
 
 # Task dependent functions
-def assert_end(text):
+def assert_end(text, tokenizer):
     """Check if the reasoning has reached a conclusion."""
     return True if "The answer is" in text and text.endswith(tokenizer.eos_token) else False
 
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
+# Remove hardcoded tokenizer loading - now passed as parameter
+# from transformers import AutoTokenizer
+# tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
 MAX_LEN_PER_STEP = 256
 
-def call_policy(question, path):
+def call_policy(question, path, model, tokenizer, temperature=TEMPERATURE):
     """Call the policy model to generate next step."""
-    url = "http://127.0.0.1:8000/v1/completions"
-    model = policy_fpath
+    # Use the passed model instead of HTTP calls
     query = f"Question: {question}\nAnswer:{path}"
-    pload = {
-        "prompt": query, 
-        "model": model, 
-        "temperature": TEMPERATURE, 
-        "max_tokens": 512,
-        "stop": ["\n"], 
-        "include_stop_str_in_output": True, 
-        "skip_special_tokens": False
-    }
-    response = requests.post(url, json=pload)
-    return json.loads(response.content)["choices"][0]["text"]
+    
+    # Tokenize input with explicit attention mask
+    inputs = tokenizer(query, return_tensors="pt", truncation=True, max_length=512, padding=True)
+    
+    # Ensure attention mask is properly set and handle pad/eos token conflicts
+    if "attention_mask" not in inputs:
+        inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+    
+    # Move to same device as model
+    device = next(model.parameters()).device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    # Generate with model - handle attention mask properly
+    with torch.no_grad():
+        try:
+            # Try with attention mask first
+            outputs = model.generate(
+                inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=512,
+                temperature=temperature,
+                do_sample=True if temperature > 0 else False,
+                pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+        except Exception as e:
+            # Fallback without attention mask if there are issues
+            print(f"Warning: Using fallback generation method: {e}")
+            outputs = model.generate(
+                inputs["input_ids"],
+                max_new_tokens=512,
+                temperature=temperature,
+                do_sample=True if temperature > 0 else False,
+                pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+    
+    # Decode output
+    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    # Extract only the new part
+    if query in generated_text:
+        new_text = generated_text[len(query):]
+    else:
+        new_text = generated_text
+    
+    return new_text.strip()
 
 #### SSDP Search Tree ####
 
@@ -77,34 +114,38 @@ class SSDPNode:
         self.semantic_embedding = None
         self.merged_nodes = []  # Track nodes that were merged into this one
         self.pruned = False
+        self.fully_expanded = False  # Track if node has been fully expanded
         
         # Calculate scores
         self._calculate_scores()
     
     def _calculate_scores(self):
-        """Calculate scores using the scoring.py system."""
+        """Calculate scores using simplified scoring system."""
         if self.content is not None:
-            question = self.tree.question
-            path = self.print_path()
+            # Simplified scoring based on content length and keywords
+            content_length = len(self.content) if self.content else 0
             
-            try:
-                # Get overall score (our main score)
-                self.overall_score = get_overall_answer_score(question, path)
+            # Basic heuristic scoring
+            if "The answer is" in self.content:
+                self.overall_score = 0.8  # High score for answers
+            elif content_length > 50:
+                self.overall_score = 0.6  # Medium score for longer content
+            elif content_length > 10:
+                self.overall_score = 0.4  # Lower score for short content
+            else:
+                self.overall_score = 0.2  # Very low score for minimal content
                 
-                # Get detailed breakdown for analysis
-                scorer = AnswerScorer()
-                detailed_result = scorer.get_overall_score(question, path)
-                self.detailed_scores = detailed_result
-                
-                # Extract confidence component specifically
-                confidence_component = detailed_result['component_scores'].get('confidence', {})
-                self.confidence_score = confidence_component.get('score', 0.0)
-                
-            except Exception as e:
-                print(f"Error getting scores: {e}")
-                self.overall_score = 0.0
-                self.confidence_score = 0.0
-                self.detailed_scores = None
+            # Add some randomness to avoid ties
+            import random
+            self.overall_score += random.uniform(-0.1, 0.1)
+            self.overall_score = max(0.0, min(1.0, self.overall_score))
+            
+            self.confidence_score = self.overall_score
+            self.detailed_scores = {
+                'overall_score': self.overall_score,
+                'component_scores': {'confidence': {'score': self.confidence_score}},
+                'weights_used': {'confidence': 1.0}
+            }
     
     def get_primary_score(self):
         """Get the primary score for ranking (overall score)."""
@@ -184,7 +225,8 @@ class SSDPTree:
         self.answer = answer
         self.all_nodes = []
         self.pruned_nodes = []
-        self.root = SSDPNode(None, None, 0, self)
+        # Initialize root with first step generation
+        self.root = SSDPNode("", None, 0, self)
         self.all_nodes.append(self.root)
         
         # Semantic similarity components
@@ -240,8 +282,15 @@ class SSDPTree:
             if prev_timestep >= 0:
                 current_level_nodes = self.get_active_nodes_at_level(prev_timestep)
         
+        # Filter out nodes that shouldn't be expanded
+        expandable_nodes = [node for node in current_level_nodes 
+                           if node.content is not None and not node.is_leaf and not node.fully_expanded]
+        
+        if not expandable_nodes:
+            return []
+        
         # Sort by overall score and take top candidates
-        scored_nodes = [(node, node.get_primary_score()) for node in current_level_nodes]
+        scored_nodes = [(node, node.get_primary_score()) for node in expandable_nodes]
         scored_nodes.sort(key=lambda x: x[1], reverse=True)
         
         return [node for node, score in scored_nodes[:max_paths]]
@@ -333,7 +382,7 @@ class SSDPTree:
             best_terminal = self.get_best_terminal_node()
             print(f"  Best terminal score: {best_terminal.get_primary_score():.3f}")
 
-def fix_value(node):
+def fix_value(node, tokenizer):
     """Apply validation and fixing rules to node values."""
     if node.parent is not None:
         if node.parent.content == node.content:
@@ -348,7 +397,7 @@ def fix_value(node):
     
     if (node.content and 
         node.content.endswith(tokenizer.eos_token) and 
-        not assert_end(node.content)):
+        not assert_end(node.content, tokenizer)):
         node.overall_score = 0.0
         node.confidence_score = 0.0
     
@@ -356,7 +405,7 @@ def fix_value(node):
 
 #### Main SSDP Algorithm ####
 
-def ssdp_worker(tree):
+def ssdp_worker(tree, model, tokenizer):
     """
     SSDP worker function implementing the main search algorithm.
     """
@@ -365,45 +414,70 @@ def ssdp_worker(tree):
     
     print(f"Starting SSDP for question: {question[:50]}...")
     
+    # Handle initial state - generate first step for root
+    if not tree.root.content or tree.root.content == "":
+        print("Generating initial step...")
+        try:
+            initial_step = call_policy(question, "", model, tokenizer)
+            tree.root.content = initial_step
+            print(f"Initial step: {initial_step[:100]}...")
+        except Exception as e:
+            print(f"Error generating initial step: {e}")
+            return tree
+    
     while iteration < LIMIT:
         # Get nodes to expand
         nodes_to_expand = tree.get_nodes_to_expand(MAX_PARALLEL_PATHS)
         
+        print(f"Iteration {iteration}: Found {len(nodes_to_expand)} nodes to expand")
+        
         if not nodes_to_expand:
             print(f"No nodes to expand at iteration {iteration}")
+            print("Available nodes:", [(n.content[:30] if n.content else "None", n.is_leaf, n.pruned, n.fully_expanded) for n in tree.all_nodes if not n.pruned])
             break
         
         # Check if we've reached maximum depth
-        current_depth = max([node.get_depth() for node in nodes_to_expand])
-        if current_depth >= MAX_DEPTH:
-            print(f"Reached maximum depth {MAX_DEPTH}")
+        if nodes_to_expand:
+            current_depth = max([node.get_depth() for node in nodes_to_expand])
+            if current_depth >= MAX_DEPTH:
+                print(f"Reached maximum depth {MAX_DEPTH}")
+                break
+        else:
+            print(f"No nodes to expand at iteration {iteration}")
             break
         
         # Expand each selected node
         for node in nodes_to_expand:
             if node.pruned or node.is_leaf:
+                print(f"Skipping node (pruned: {node.pruned}, is_leaf: {node.is_leaf})")
                 continue
             
             # Determine expansion budget for this node
             budget = tree.adaptive_expansion_budget(node)
+            print(f"Expanding node with budget {budget}")
             
             # Expand node multiple times
             for _ in range(budget):
                 try:
                     # Generate next step
                     path = node.print_path()
-                    next_step = call_policy(question, path)
+                    print(f"Generating next step for path: {path[:50]}...")
+                    next_step = call_policy(question, path, model, tokenizer)
                     
                     # Create new node
-                    is_terminal = assert_end(next_step)
+                    is_terminal = assert_end(next_step, tokenizer)
                     new_node = tree.add_node(next_step, node, is_terminal)
+                    print(f"Created new node (terminal: {is_terminal}): {next_step[:50]}...")
                     
                     # Apply validation rules
-                    fix_value(new_node)
+                    fix_value(new_node, tokenizer)
                     
                 except Exception as e:
                     print(f"Error expanding node: {e}")
                     continue
+            
+            # Mark node as fully expanded after using its budget
+            node.fully_expanded = True
         
         # Fit vectorizer after first expansion
         if iteration == 0:
@@ -429,6 +503,31 @@ def ssdp_worker(tree):
     tree.print_statistics()
     
     return tree
+
+def run_ssdp_experiment(question, expected_answer, model, tokenizer):
+    """Run SSDP search algorithm."""
+    # Create SSDP tree
+    tree = SSDPTree(question, expected_answer)
+    
+    # Run SSDP worker
+    result_tree = ssdp_worker(tree, model, tokenizer)
+    
+    # Extract best answer
+    best_terminal = result_tree.get_best_terminal_node()
+    if best_terminal:
+        final_answer = best_terminal.content
+        answer_found = True
+    else:
+        final_answer = ""
+        answer_found = False
+    
+    return {
+        'final_answer': final_answer,
+        'answer_found': answer_found,
+        'search_steps': len(result_tree.all_nodes),
+        'tokens_used': sum(len(tokenizer.tokenize(node.content)) for node in result_tree.all_nodes if node.content),
+        'raw_tree': result_tree
+    }
 
 #### Main Execution ####
 
