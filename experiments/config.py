@@ -55,25 +55,25 @@ class ModelConfig:
 MODELS = {
     "qwen2.5-1.5b": ModelConfig(
         name="Qwen2.5-1.5B",
-        model_id="Qwen/Qwen2.5-1.5B-Instruct",  # Correct model ID
+        model_id="Qwen/Qwen2.5-1.5B-Instruct",  # Correct model ID - uses Instruct suffix
         max_tokens=512,
         temperature=0.8
     ),
     "qwen2.5-7b": ModelConfig(
         name="Qwen2.5-7B", 
-        model_id="Qwen/Qwen2.5-7B-Instruct",  # Correct model ID
+        model_id="Qwen/Qwen2.5-7B-Instruct",  # Correct model ID - uses Instruct suffix
         max_tokens=512,
         temperature=0.8
     ),
     "llama3.1-8b": ModelConfig(
         name="LLaMA-3.1-8B",
-        model_id="meta-llama/Llama-3.1-8B-Instruct",  # Correct model ID
+        model_id="meta-llama/Llama-3.1-8B-Instruct",  # Requires HF token
         max_tokens=512,
         temperature=0.8
     ),
     "llama3.2-3b": ModelConfig(
         name="LLaMA-3.2-3B",
-        model_id="meta-llama/Llama-3.2-3B-Instruct",  # Correct model ID
+        model_id="meta-llama/Llama-3.2-3B-Instruct",  # Requires HF token
         max_tokens=512,
         temperature=0.8
     )
@@ -422,11 +422,35 @@ def load_model(model_name: str):
         
         # Load tokenizer and model
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_id)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_config.model_id,
-            torch_dtype=torch.float16,
-            device_map="auto"
-        )
+        
+        # Use more aggressive quantization to save disk space
+        try:
+            from transformers import BitsAndBytesConfig
+            
+            # Configure quantization
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                bnb_4bit_compute_dtype=torch.float16
+            )
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                model_config.model_id,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                low_cpu_mem_usage=True,
+                quantization_config=quantization_config,
+                # Use flash attention if available
+                attn_implementation="flash_attention_2" if hasattr(torch, 'flash_attention') else "eager"
+            )
+        except ImportError:
+            # Fallback if bitsandbytes is not available
+            print("⚠️  bitsandbytes not available, using standard loading")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_config.model_id,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                low_cpu_mem_usage=True
+            )
         
         print(f"✅ Model {model_config.name} loaded successfully")
         return model, tokenizer

@@ -347,6 +347,19 @@ def run_experiments():
                     gc.collect()
                     print(f"✅ Model {model_name} unloaded and memory freed")
                     
+                    # Check disk usage
+                    try:
+                        import shutil
+                        total, used, free = shutil.disk_usage("/")
+                        used_gb = used / (1024**3)
+                        free_gb = free / (1024**3)
+                        print(f"💾 Disk usage: {used_gb:.1f}GB used, {free_gb:.1f}GB free")
+                        
+                        if free_gb < 2.0:
+                            print(f"⚠️  WARNING: Less than 2GB free space! Consider clearing more cache.")
+                    except Exception as e:
+                        print(f"⚠️  Could not check disk usage: {e}")
+                    
                     # Also clear Hugging Face cache for this model
                     try:
                         import shutil
@@ -361,6 +374,21 @@ def run_experiments():
                                     elif item.is_file():
                                         item.unlink()
                                         print(f"🗑️  Cleared cache file for {model_name}")
+                        
+                        # Also clear PyTorch cache
+                        torch_cache_dir = Path.home() / ".cache" / "torch"
+                        if torch_cache_dir.exists():
+                            shutil.rmtree(torch_cache_dir)
+                            print(f"🗑️  Cleared PyTorch cache")
+                            
+                        # Clear any temporary files
+                        import tempfile
+                        temp_dir = Path(tempfile.gettempdir())
+                        for temp_file in temp_dir.glob("*torch*"):
+                            if temp_file.is_file():
+                                temp_file.unlink()
+                                print(f"🗑️  Cleared temp file: {temp_file.name}")
+                                
                     except Exception as e:
                         print(f"⚠️  Could not clear cache: {e}")
                 
