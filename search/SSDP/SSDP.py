@@ -63,7 +63,7 @@ def _calculate_average_confidence(logprobs: List[float]) -> float:
     if not logprobs:
         return 0.0
     avg_logprob = np.mean(logprobs)
-    return float(np.exp(avg_loglogprob))
+    return float(np.exp(avg_logprob))
 
 #### SSDP Search Tree ####
 
