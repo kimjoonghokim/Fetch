@@ -81,7 +81,7 @@ class AnswerScorer:
         path: str = "", 
         method: ScoringMethod = ScoringMethod.CONFIDENCE_AVERAGE,
         include_raw: bool = False
-    ) -> ConfidenceScore:
+    ) -> Tuple[ConfidenceScore, Dict]:
         """
         Get confidence score for an answer using the specified method.
         
@@ -92,7 +92,9 @@ class AnswerScorer:
             include_raw: Whether to include raw API response
             
         Returns:
-            ConfidenceScore object with scoring results
+            A tuple containing:
+            - ConfidenceScore object with scoring results
+            - A dictionary with token usage statistics
         """
         try:
             # Make API call with logprobs to get confidence data
@@ -103,7 +105,7 @@ class AnswerScorer:
             
         except Exception as e:
             print(f"Error getting confidence score: {e}")
-            return ConfidenceScore(text="", raw_response={"error": str(e)})
+            return ConfidenceScore(text="", raw_response={"error": str(e)}), {}
     
     def _call_policy_with_confidence(self, question: str, path: str) -> Dict:
         """
@@ -140,7 +142,7 @@ class AnswerScorer:
         response_data: Dict, 
         method: ScoringMethod,
         include_raw: bool = False
-    ) -> ConfidenceScore:
+    ) -> Tuple[ConfidenceScore, Dict]:
         """
         Calculate confidence scores from API response data.
         
@@ -150,12 +152,15 @@ class AnswerScorer:
             include_raw: Whether to include raw response
             
         Returns:
-            ConfidenceScore with calculated metrics
+            A tuple containing:
+            - ConfidenceScore with calculated metrics
+            - A dictionary with token usage statistics
         """
         try:
             choice = response_data["choices"][0]
             text = choice["text"]
             logprobs_data = choice.get("logprobs", {})
+            usage = response_data.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
             
             # Initialize result
             result = ConfidenceScore(
@@ -164,7 +169,7 @@ class AnswerScorer:
             )
             
             if not logprobs_data:
-                return result
+                return result, usage
             
             # Extract token-level data
             token_logprobs = logprobs_data.get("token_logprobs", [])
@@ -179,7 +184,7 @@ class AnswerScorer:
             valid_logprobs = [lp for lp in token_logprobs if lp is not None]
             
             if not valid_logprobs:
-                return result
+                return result, usage
             
             # Calculate all confidence metrics
             result.avg_confidence = self._calculate_average_confidence(valid_logprobs)
@@ -187,11 +192,11 @@ class AnswerScorer:
             result.geometric_confidence = self._calculate_geometric_confidence(valid_logprobs)
             result.perplexity = self._calculate_perplexity(valid_logprobs)
             
-            return result
+            return result, usage
             
         except Exception as e:
             print(f"Error calculating confidence scores: {e}")
-            return ConfidenceScore(text="", raw_response={"error": str(e)})
+            return ConfidenceScore(text="", raw_response={"error": str(e)}), {}
     
     def _calculate_average_confidence(self, logprobs: List[float]) -> float:
         """Calculate average log probability confidence."""
@@ -294,7 +299,7 @@ class AnswerScorer:
         reference_answers: Optional[List[str]] = None,
         weights: Optional[Dict[str, float]] = None,
         normalize: bool = True
-    ) -> Dict[str, Union[float, Dict]]:
+    ) -> Tuple[Dict[str, Union[float, Dict]], Dict]:
         """
         Calculate an overall score combining multiple scoring methods.
         
@@ -312,15 +317,9 @@ class AnswerScorer:
             normalize: Whether to normalize the final score to 0-1 range
             
         Returns:
-            Dictionary containing:
-            - 'overall_score': Final weighted score (0-1 if normalized)
-            - 'component_scores': Individual scores from each method
-            - 'weights_used': The weights applied to each component
-            
-        Example:
-            scorer = AnswerScorer()
-            result = scorer.get_overall_score("What is 2+2?", "")
-            print(f"Overall score: {result['overall_score']:.3f}")
+            A tuple containing:
+            - A dictionary with the overall score and component breakdown
+            - A dictionary with token usage statistics
         """
         
         # Default weights for scoring components
@@ -338,10 +337,11 @@ class AnswerScorer:
         
         # Initialize component scores
         component_scores = {}
+        usage = {}
         
         # 1. CONFIDENCE SCORING (Currently implemented)
         try:
-            confidence_result = self.get_confidence_score(question, path)
+            confidence_result, usage = self.get_confidence_score(question, path)
             component_scores['confidence'] = {
                 'score': confidence_result.avg_confidence or 0.0,
                 'details': {
@@ -355,6 +355,7 @@ class AnswerScorer:
         except Exception as e:
             print(f"Warning: Confidence scoring failed: {e}")
             component_scores['confidence'] = {'score': 0.0, 'details': {'error': str(e)}}
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
         # 2. PARENT/CHILD QUALITY SCORING (Future implementation)
         if active_weights.get('parent_child_quality', 0) > 0 and node is not None:
@@ -425,7 +426,7 @@ class AnswerScorer:
         if normalize:
             overall_score = max(0.0, min(1.0, overall_score))
         
-        return {
+        result = {
             'overall_score': overall_score,
             'component_scores': component_scores,
             'weights_used': weights_used,
@@ -436,13 +437,14 @@ class AnswerScorer:
                 'normalized': normalize
             }
         }
+        return result, usage
     
     def get_simple_overall_score(
         self,
         question: str,
         path: str = "",
         custom_weights: Optional[Dict[str, float]] = None
-    ) -> float:
+    ) -> Tuple[float, Dict]:
         """
         Get a simple overall score (0-1) for easy integration with search algorithms.
         
@@ -452,15 +454,17 @@ class AnswerScorer:
             custom_weights: Optional custom weights for scoring components
             
         Returns:
-            Float score between 0.0 and 1.0
+            A tuple containing:
+            - Float score between 0.0 and 1.0
+            - A dictionary with token usage statistics
             
         Example:
             scorer = AnswerScorer()
-            score = scorer.get_simple_overall_score("What is 2+2?", "")
+            score, usage = scorer.get_simple_overall_score("What is 2+2?", "")
             print(f"Score: {score:.3f}")
         """
-        result = self.get_overall_score(question, path, weights=custom_weights)
-        return result['overall_score']
+        result, usage = self.get_overall_score(question, path, weights=custom_weights)
+        return result['overall_score'], usage
 
 
 # Convenience functions for easy integration with existing code
@@ -505,7 +509,7 @@ def get_overall_answer_score(
     path: str = "", 
     config: Optional[PolicyConfig] = None,
     weights: Optional[Dict[str, float]] = None
-) -> float:
+) -> Tuple[float, Dict]:
     """
     Convenience function to get an overall score (0-1) for a single answer.
     This is the main function that search algorithms should use.
@@ -517,15 +521,17 @@ def get_overall_answer_score(
         weights: Custom weights for scoring components
         
     Returns:
-        Overall score between 0 and 1
+        A tuple containing:
+        - Overall score between 0 and 1
+        - A dictionary with token usage statistics
         
     Example:
         # Basic usage
-        score = get_overall_answer_score("What is 2+2?", "")
+        score, usage = get_overall_answer_score("What is 2+2?", "")
         
         # With custom weights (when more components are available)
         custom_weights = {"confidence": 0.7, "length_penalty": 0.3}
-        score = get_overall_answer_score("What is 2+2?", "", weights=custom_weights)
+        score, usage = get_overall_answer_score("What is 2+2?", "", weights=custom_weights)
     """
     scorer = AnswerScorer(config)
     return scorer.get_simple_overall_score(question, path, weights)

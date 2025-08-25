@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Tuple
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
+import time
 
 from scoring import get_overall_answer_score, AnswerScorer
 
@@ -51,7 +52,10 @@ def call_policy(question, path):
         "skip_special_tokens": False
     }
     response = requests.post(url, json=pload)
-    return json.loads(response.content)["choices"][0]["text"]
+    response_json = response.json()
+    text = response_json["choices"][0]["text"]
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return text, usage
 
 #### SSDP Search Tree ####
 
@@ -80,19 +84,24 @@ class SSDPNode:
         self._calculate_scores()
     
     def _calculate_scores(self):
-        """Calculate scores using the scoring.py system."""
+        """Calculate scores using the scoring.py system and track token usage."""
         if self.content is not None:
             question = self.tree.question
             path = self.print_path()
             
             try:
-                # Get overall score (our main score)
-                self.overall_score = get_overall_answer_score(question, path)
-                
-                # Get detailed breakdown for analysis
+                # Create a single scorer instance
                 scorer = AnswerScorer()
-                detailed_result = scorer.get_overall_score(question, path)
+
+                # Get detailed breakdown and usage
+                detailed_result, usage = scorer.get_overall_score(question, path)
                 self.detailed_scores = detailed_result
+                self.overall_score = detailed_result['overall_score']
+
+                # Aggregate token usage
+                self.tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                self.tree.total_completion_tokens += usage.get("completion_tokens", 0)
+                self.tree.total_tokens += usage.get("total_tokens", 0)
                 
                 # Extract confidence component specifically
                 confidence_component = detailed_result['component_scores'].get('confidence', {})
@@ -193,10 +202,14 @@ class SSDPTree:
         )
         self.vectorizer_fitted = False
         
-        # Statistics
+        # Statistics & Metrics
         self.total_expansions = 0
         self.total_merges = 0
         self.total_prunes = 0
+        self.runtime_seconds = 0.0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
     
     def fit_vectorizer(self):
         """Fit the vectorizer on existing node contents."""
@@ -390,7 +403,10 @@ def ssdp_worker(tree):
                 try:
                     # Generate next step
                     path = node.print_path()
-                    next_step = call_policy(question, path)
+                    next_step, usage = call_policy(question, path)
+                    tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.total_completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_tokens += usage.get("total_tokens", 0)
                     
                     # Create new node
                     is_terminal = assert_end(next_step)
@@ -452,7 +468,9 @@ def main():
     processed_problems = []
     for problem in tqdm(problems, desc="SSDP Search"):
         try:
+            start_time = time.time()
             result = ssdp_worker(problem)
+            result.runtime_seconds = time.time() - start_time
             processed_problems.append(result)
         except Exception as e:
             print(f"Error processing problem: {e}")
@@ -467,12 +485,22 @@ def main():
     total_expansions = sum(p.total_expansions for p in processed_problems)
     total_merges = sum(p.total_merges for p in processed_problems)
     total_prunes = sum(p.total_prunes for p in processed_problems)
+    total_runtime = sum(p.runtime_seconds for p in processed_problems)
+    total_prompt_tokens = sum(p.total_prompt_tokens for p in processed_problems)
+    total_completion_tokens = sum(p.total_completion_tokens for p in processed_problems)
+    total_tokens = sum(p.total_tokens for p in processed_problems)
     
     print(f"Total nodes created: {total_nodes}")
     print(f"Total expansions: {total_expansions}")
     print(f"Total merges: {total_merges}")
     print(f"Total prunes: {total_prunes}")
     print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
+    print(f"\n--- Metrics ---")
+    print(f"Total runtime: {total_runtime:.2f} seconds")
+    print(f"Average runtime per problem: {total_runtime / len(processed_problems):.2f} seconds")
+    print(f"Total prompt tokens: {total_prompt_tokens}")
+    print(f"Total completion tokens: {total_completion_tokens}")
+    print(f"Total tokens: {total_tokens}")
 
 if __name__ == "__main__":
     main() 

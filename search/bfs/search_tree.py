@@ -28,6 +28,11 @@ class Tree:
         self.all_nodes = []
         self.root = None # wait init
         self.additional_info = additional_info
+        # Metrics
+        self.runtime_seconds = 0.0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
 
     def init_root_node(self, value):
         self.root = Node(None, value, None, 0, self)
