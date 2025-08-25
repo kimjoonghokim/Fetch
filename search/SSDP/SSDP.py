@@ -9,8 +9,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
 
-# Add the scorer directory to the path
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'scorer'))
 from scoring import get_overall_answer_score, AnswerScorer
 
 # SSDP Configuration
