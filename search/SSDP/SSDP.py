@@ -36,7 +36,7 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
 MAX_LEN_PER_STEP = 256
 
-def call_policy(question, path, shared_data):
+def call_policy(question, path):
     """Call the policy model to generate next step and get logprobs."""
     url = "http://127.0.0.1:8000/v1/completions"
     model = policy_fpath
@@ -55,11 +55,6 @@ def call_policy(question, path, shared_data):
     response_json = response.json()
     choice = response_json["choices"][0]
     usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-    
-    # Update shared usage data
-    shared_data["prompt_tokens"] += usage.get("prompt_tokens", 0)
-    shared_data["completion_tokens"] += usage.get("completion_tokens", 0)
-    shared_data["total_tokens"] += usage.get("total_tokens", 0)
     
     return choice, usage
 
@@ -211,6 +206,9 @@ class SSDPTree:
         self.total_merges = 0
         self.total_prunes = 0
         self.runtime_seconds = 0.0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
     
     def fit_vectorizer(self):
         if not self.vectorizer_fitted:
@@ -328,7 +326,18 @@ def ssdp_worker(args):
             for _ in range(budget):
                 try:
                     path = node.print_path()
-                    choice, _ = call_policy(question, path, shared_data)
+                    choice, usage = call_policy(question, path)
+                    
+                    # Update tree-specific token counts
+                    tree.prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_tokens += usage.get("total_tokens", 0)
+
+                    # Update shared token counts
+                    shared_data["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                    shared_data["completion_tokens"] += usage.get("completion_tokens", 0)
+                    shared_data["total_tokens"] += usage.get("total_tokens", 0)
+
                     is_terminal = assert_end(choice["text"])
                     new_node = tree.add_node(choice, node, is_terminal)
                     fix_value(new_node)
