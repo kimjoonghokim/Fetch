@@ -11,22 +11,11 @@ import sys
 import time
 from multiprocessing import Pool, Manager
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# SSDP Configuration
-LIMIT = 50                    # Maximum search iterations
-MAX_PARALLEL_PATHS = 1        # Expand only the single best node
-MIN_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
-MAX_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
-TEMPERATURE = 0.8             # Model temperature
-OVERALL_SCORE_THRESHOLD = 0.5 # Increased from 0.3 for more aggressive pruning
-SIMILARITY_THRESHOLD = 0.85   # Similarity threshold for merging nodes
-PRUNE_FREQUENCY = 3           # Prune every N iterations
-MAX_DEPTH = 10               # Maximum reasoning depth
+from collections import Counter
+from config import *
 
 # File paths
-data_fpath = "../../dataset/toy.jsonl"
 output_fpath = f"test_gsm8k_ssdp_p{MAX_PARALLEL_PATHS}_t{OVERALL_SCORE_THRESHOLD}.pkl"
-policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k"
 
 # Task dependent functions
 def assert_end(text):
@@ -34,13 +23,12 @@ def assert_end(text):
     return True if text and text.strip().split("\n")[-1].startswith("The answer is") else False
 
 from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
-MAX_LEN_PER_STEP = 256
+tokenizer = AutoTokenizer.from_pretrained(POLICY_MODEL)
 
 def call_policy(question, path):
     """Call the policy model to generate next step and get logprobs."""
-    url = "http://127.0.0.1:8000/v1/completions"
-    model = policy_fpath
+    url = POLICY_URL
+    model = POLICY_MODEL
     query = f"Question: {question}\nAnswer:{path}"
     pload = {
         "prompt": query, 
@@ -199,7 +187,7 @@ class SSDPTree:
         self.root = SSDPNode(None, None, 0, self)
         self.all_nodes.append(self.root)
         
-        self.vectorizer = TfidfVectorizer(max_features=1000, stop_words='english', ngram_range=(1, 2))
+        self.vectorizer = TfidfVectorizer(max_features=TFIDF_MAX_FEATURES, stop_words='english', ngram_range=TFIDF_NGRAM_RANGE)
         self.vectorizer_fitted = False
         
         # Statistics & Metrics
@@ -214,6 +202,7 @@ class SSDPTree:
     def fit_vectorizer(self):
         if not self.vectorizer_fitted:
             texts = [node.content for node in self.all_nodes if node.content is not None]
+            texts.append(self.question)
             if texts:
                 try:
                     self.vectorizer.fit(texts)
@@ -278,7 +267,7 @@ class SSDPTree:
     
     def adaptive_expansion_budget(self, node):
         score = node.get_primary_score()
-        if score >= 0.8: return MAX_EXPANSION_BUDGET
+        if score >= HIGH_QUALITY_THRESHOLD: return MAX_EXPANSION_BUDGET
         elif score >= 0.6: return MAX_EXPANSION_BUDGET - 1
         elif score >= 0.4: return MIN_EXPANSION_BUDGET + 1
         else: return MIN_EXPANSION_BUDGET
@@ -298,6 +287,31 @@ class SSDPTree:
             best_terminal = self.get_best_terminal_node()
             print(f"  Best terminal score: {best_terminal.get_primary_score():.3f}")
 
+def is_repetitive(text, repetition_penalty):
+    """Check if the text has repetitive phrases."""
+    words = text.split()
+    if len(words) < 3:
+        return False
+    trigrams = [" ".join(words[i:i+3]) for i in range(len(words) - 2)]
+    if not trigrams:
+        return False
+    counts = Counter(trigrams)
+    if counts.most_common(1)[0][1] > repetition_penalty:
+        return True
+    return False
+
+def is_dissimilar_to_question(text, question, vectorizer, min_similarity):
+    """Check if the text is semantically dissimilar to the question."""
+    if not text or not question or not vectorizer.get_feature_names_out().any():
+        return False
+    try:
+        text_embedding = vectorizer.transform([text]).toarray()[0]
+        question_embedding = vectorizer.transform([question]).toarray()[0]
+        similarity = cosine_similarity([text_embedding], [question_embedding])[0, 0]
+        return similarity < min_similarity
+    except:
+        return False
+
 def fix_value(node):
     if node.parent is not None and node.content is not None:
         if node.parent.content == node.content:
@@ -306,6 +320,17 @@ def fix_value(node):
         node.overall_score = 0.0
     if node.content and node.content.endswith(tokenizer.eos_token) and not assert_end(node.content):
         node.overall_score = 0.0
+    
+    path_text = node.print_path()
+    if len(path_text) > MAX_PATH_LENGTH:
+        node.overall_score = 0.0
+
+    if is_repetitive(path_text, REPETITION_PENALTY):
+        node.overall_score = 0.0
+        
+    if is_dissimilar_to_question(node.content, node.tree.question, node.tree.vectorizer, MIN_QUESTION_SIMILARITY):
+        node.overall_score = 0.0
+        
     return node
 
 def ssdp_worker(tree):
@@ -352,14 +377,14 @@ def ssdp_worker(tree):
 
             if iteration == 0:
                 tree.fit_vectorizer()
-            if iteration % 2 == 0 and tree.vectorizer_fitted:
+            if iteration % MERGE_FREQUENCY == 0 and tree.vectorizer_fitted:
                 tree.merge_similar_nodes()
             if iteration % PRUNE_FREQUENCY == 0:
                 tree.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
             
             iteration += 1
             best_terminal = tree.get_best_terminal_node()
-            if best_terminal and best_terminal.get_primary_score() >= 0.8:
+            if best_terminal and best_terminal.get_primary_score() >= HIGH_QUALITY_THRESHOLD:
                 break
             
     tree.runtime_seconds = time.time() - start_time
@@ -379,7 +404,7 @@ def main():
     print("Loading dataset...")
     
     # Count the number of lines for tqdm
-    with open(data_fpath, "r") as f:
+    with open(DATA_PATH, "r") as f:
         num_lines = sum(1 for line in f)
 
     print(f"Found {num_lines} problems.")
@@ -392,7 +417,7 @@ def main():
     print("Starting SSDP search with multiprocessing...")
     
     with Pool(processes=os.cpu_count()) as pool:
-        with open(data_fpath, "r") as f:
+        with open(DATA_PATH, "r") as f:
             # Create a generator for problems
             problem_generator = (json.loads(line) for line in f)
             

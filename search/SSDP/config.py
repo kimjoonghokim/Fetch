@@ -19,6 +19,11 @@ HIGH_QUALITY_THRESHOLD = 0.8    # Threshold for early stopping
 PRUNE_FREQUENCY = 3             # Prune every N iterations
 MERGE_FREQUENCY = 2             # Merge similar nodes every N iterations
 
+# Heuristic Pruning Parameters
+MAX_PATH_LENGTH = 1024
+REPETITION_PENALTY = 1.0
+MIN_QUESTION_SIMILARITY = 0.1
+
 # Model Parameters
 TEMPERATURE = 0.8               # Model temperature
 MAX_LEN_PER_STEP = 256         # Maximum tokens per reasoning step
@@ -48,4 +53,4 @@ CUSTOM_SCORING_WEIGHTS = {
     'semantic_similarity': 0.0,   # Future
     'coherence': 0.0,            # Future
     'factual_consistency': 0.0   # Future
-} 
+}
