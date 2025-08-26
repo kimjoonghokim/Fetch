@@ -201,7 +201,7 @@ class SSDPTree:
         self.total_expansions += 1
         return node
     
-    def get_nodes_to_expand(self):
+    def get_nodes_to_expand(self, max_parallel_paths):
         exploit_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf and n.status == "exploit"]
         explore_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf and n.status == "explore"]
         
@@ -209,7 +209,7 @@ class SSDPTree:
         explore_nodes.sort(key=lambda x: x.get_primary_score(), reverse=True)
 
         # Prioritize exploit nodes, then explore nodes
-        return exploit_nodes[:MAX_PARALLEL_PATHS] + explore_nodes[:MAX_PARALLEL_PATHS]
+        return exploit_nodes[:max_parallel_paths] + explore_nodes[:max_parallel_paths]
     
     def merge_similar_nodes(self):
         nodes_at_current_level = [n for n in self.all_nodes if not n.pruned and not n.is_leaf]
@@ -301,16 +301,17 @@ def fix_value(node):
         
     return node
 
-def ssdp_worker(tree):
+def ssdp_worker(args):
+    tree, max_parallel_paths = args
     question = tree.question
     iteration = 0
     
     start_time = time.time()
     tree.fit_vectorizer()
     
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_PATHS) as executor:
+    with ThreadPoolExecutor(max_workers=max_parallel_paths) as executor:
         while iteration < LIMIT:
-            nodes_to_expand = tree.get_nodes_to_expand()
+            nodes_to_expand = tree.get_nodes_to_expand(max_parallel_paths)
             if not nodes_to_expand:
                 break
             
@@ -350,12 +351,12 @@ def ssdp_worker(tree):
     tree.runtime_seconds = time.time() - start_time
     return tree
 
-def prepare_problem(instance):
+def prepare_problem(instance, max_parallel_paths):
     """Prepare a problem for the worker by creating an SSDPTree."""
     question = instance["question"]
     answer = instance["answer"]
     tree = SSDPTree(question, answer)
-    return tree
+    return (tree, max_parallel_paths)
 
 #### Main Execution ####
 
@@ -375,7 +376,7 @@ def main():
     with Pool(processes=os.cpu_count()) as pool:
         with open(DATA_PATH, "r") as f:
             problem_generator = (json.loads(line) for line in f)
-            worker_args = (prepare_problem(instance) for instance in problem_generator)
+            worker_args = (prepare_problem(instance, MAX_PARALLEL_PATHS) for instance in problem_generator)
 
             try:
                 for result in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):

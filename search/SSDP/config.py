@@ -4,6 +4,7 @@ Configuration file for the new SSDP (Semantic Similarity based Dynamic Pruning) 
 
 # Search Parameters
 LIMIT = 50                      # Maximum search iterations
+MAX_PARALLEL_PATHS = 8          # Maximum number of parallel paths to explore
 MAX_DEPTH = 10                  # Maximum reasoning depth
 
 # Exploration and Exploitation
