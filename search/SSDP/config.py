@@ -16,20 +16,20 @@ SIMILARITY_THRESHOLD = 0.85     # Similarity threshold for merging nodes
 HIGH_QUALITY_THRESHOLD = 0.9    # Threshold for a high-quality solution
 
 # Pruning and Merging
-PRUNE_FREQUENCY = 1             # Prune every N iterations
+PRUNE_FREQUENCY = 999             # Effectively disable pruning
 MERGE_FREQUENCY = 1             # Merge similar nodes every N iterations
 
 # Heuristic Pruning Parameters
-MAX_PATH_LENGTH = 1024
-REPETITION_PENALTY = 3
-MIN_QUESTION_SIMILARITY = 0.1
+MAX_PATH_LENGTH = 9999
+REPETITION_PENALTY = 999
+MIN_QUESTION_SIMILARITY = 0.0
 
 # Depth-Aware and Budget-Aware Pruning
-DEPTH_AWARE_PRUNING_FACTOR = 0.1 # How much to increase pruning threshold with depth
-BUDGET_AWARE_PRUNING_FACTOR = 0.1 # How much to increase pruning threshold as budget is used
+DEPTH_AWARE_PRUNING_FACTOR = 0.0
+BUDGET_AWARE_PRUNING_FACTOR = 0.0
 
 # Early Stopping
-EARLY_STOPPING_PATIENCE = 5       # Number of iterations to wait for score improvement
+EARLY_STOPPING_PATIENCE = 999       # Number of iterations to wait for score improvement
 EARLY_STOPPING_THRESHOLD = 0.01   # Minimum score improvement to reset patience
 
 # Model Parameters

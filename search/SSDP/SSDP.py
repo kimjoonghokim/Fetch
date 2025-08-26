@@ -334,12 +334,21 @@ def ssdp_worker(args):
     start_time = time.time()
     tree.fit_vectorizer()
     
+    print(f"\n--- Starting SSDP for question: {question[:50]}... ---")
+    
     with ThreadPoolExecutor(max_workers=max_parallel_paths) as executor:
         while iteration < LIMIT:
+            print(f"\n--- Iteration {iteration} ---")
             nodes_to_expand = tree.get_nodes_to_expand(max_parallel_paths)
+            
             if not nodes_to_expand:
+                print("No more nodes to expand. Stopping.")
                 break
             
+            print(f"Expanding {len(nodes_to_expand)} nodes...")
+            for i, node in enumerate(nodes_to_expand):
+                print(f"  Node {i}: score={node.get_primary_score():.3f}, status={node.status}, depth={node.get_depth()}")
+
             future_to_node = {}
             for node in nodes_to_expand:
                 path = node.print_path()
@@ -358,13 +367,16 @@ def ssdp_worker(args):
                     is_terminal = assert_end(choice["text"])
                     new_node = tree.add_node(choice, node, is_terminal)
                     fix_value(new_node)
+                    print(f"  New node created: score={new_node.get_primary_score():.3f}, status={new_node.status}, depth={new_node.get_depth()}")
                 except Exception as e:
                     print(f"Error expanding node: {e}")
                     continue
 
             if iteration % MERGE_FREQUENCY == 0:
+                print("Merging similar nodes...")
                 tree.merge_similar_nodes()
             if iteration % PRUNE_FREQUENCY == 0:
+                print("Pruning low-scoring nodes...")
                 tree.prune_nodes(iteration)
             
             if tree.check_early_stopping():
