@@ -8,6 +8,7 @@ import json
 import pickle
 import numpy as np
 import jsonlines
+import time
 
 
 LIMIT=50
@@ -37,6 +38,8 @@ output_fpath = f"test_gsm8k_bfs_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the outp
 policy_fpath = "path/to/llama/ckpt" # path to the policy model
 
 if __name__ == '__main__':
+    program_start_time = time.time()
+    total_tokens_used = 0
     
     if CONTINUE:    
         problems = pickle.load(open(output_fpath, "rb"))
@@ -57,6 +60,7 @@ if __name__ == '__main__':
         start = 0
 
     for i in range(start, LIMIT):
+        iteration_start_time = time.time()
         questions = []
         anchors = []
         paths = []
@@ -76,35 +80,54 @@ if __name__ == '__main__':
         if len(questions) == 0:
             break
 
-        next_steps, next_values = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        
+        iteration_tokens = sum(usage.get('total_tokens', 0) for usage in usages)
+        total_tokens_used += iteration_tokens
+        
         for state, next_step, next_value in zip(anchors, next_steps, next_values):
             child = state.tree.add_node(next_step, next_value, state, i + 1, assert_end(next_step))
             fix_value(child)
 
         pickle.dump(problems, open(output_fpath, "wb"))
+        
+        iteration_time = time.time() - iteration_start_time
+        print(f"Iteration {i} took {iteration_time:.2f} seconds.")
+        print(f"Tokens used in iteration {i}: {iteration_tokens}")
             
-# if unfinish, select 1 node and extend to the end
-questions = []
-anchors = []
-paths = []
-finished = 0
-for problem in problems:
-    state = problem.select_best_node()
-    if state is not None:
-        anchors += [state]
-        questions += [problem.question]
-        paths += [state.print_path()]
-    else:
-        finished += 1
+    # if unfinish, select 1 node and extend to the end
+    questions = []
+    anchors = []
+    paths = []
+    finished = 0
+    for problem in problems:
+        state = problem.select_best_node()
+        if state is not None:
+            anchors += [state]
+            questions += [problem.question]
+            paths += [state.print_path()]
+        else:
+            finished += 1
 
-if len(questions) != 0:
-    print(f"iteration final")
-    print(f"finished {finished} / {len(problems)}")
+    if len(questions) != 0:
+        print(f"iteration final")
+        print(f"finished {finished} / {len(problems)}")
 
-    next_steps, next_values = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
-    for state, next_step, next_value in zip(anchors, next_steps, next_values):
-        child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
-        fix_value(child)
+        next_steps, next_values, usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+        
+        iteration_tokens = sum(usage.get('total_tokens', 0) for usage in usages)
+        total_tokens_used += iteration_tokens
+        
+        for state, next_step, next_value in zip(anchors, next_steps, next_values):
+            child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
+            fix_value(child)
 
-    pickle.dump(problems, open(output_fpath, "wb"))
+        pickle.dump(problems, open(output_fpath, "wb"))
+        print(f"Final iteration tokens: {iteration_tokens}")
+
+    program_end_time = time.time()
+    total_runtime = program_end_time - program_start_time
+    print(f"\nTotal program runtime: {total_runtime:.2f} seconds.")
+    print(f"Total tokens used: {total_tokens_used}")
+
 
