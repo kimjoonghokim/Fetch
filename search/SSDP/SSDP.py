@@ -276,6 +276,31 @@ class SSDPTree:
         if not terminal_nodes: return None
         return max(terminal_nodes, key=lambda x: x.get_primary_score())
 
+def is_repetitive(text, repetition_penalty):
+    """Check if the text has repetitive phrases."""
+    words = text.split()
+    if len(words) < 3:
+        return False
+    trigrams = [" ".join(words[i:i+3]) for i in range(len(words) - 2)]
+    if not trigrams:
+        return False
+    counts = Counter(trigrams)
+    if counts.most_common(1)[0][1] > repetition_penalty:
+        return True
+    return False
+
+def is_dissimilar_to_question(text, question, vectorizer, min_similarity):
+    """Check if the text is semantically dissimilar to the question."""
+    if not text or not question or not vectorizer.get_feature_names_out().any():
+        return False
+    try:
+        text_embedding = vectorizer.transform([text]).toarray()[0]
+        question_embedding = vectorizer.transform([question]).toarray()[0]
+        similarity = cosine_similarity([text_embedding], [question_embedding])[0, 0]
+        return similarity < min_similarity
+    except:
+        return False
+
 def fix_value(node):
     if node.parent is not None and node.content is not None:
         if node.parent.content == node.content:
