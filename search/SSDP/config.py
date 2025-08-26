@@ -7,30 +7,13 @@ LIMIT = 50                      # Maximum search iterations
 MAX_PARALLEL_PATHS = 8          # Maximum number of parallel paths to explore
 MAX_DEPTH = 10                  # Maximum reasoning depth
 
-# Exploration and Exploitation
-EXPLORE_EXPLOIT_THRESHOLD = 0.5 # Score threshold to switch from exploit to explore
-
 # Scoring Thresholds
-OVERALL_SCORE_THRESHOLD = 0.4   # Start with a moderate threshold
 SIMILARITY_THRESHOLD = 0.85     # Similarity threshold for merging nodes
 HIGH_QUALITY_THRESHOLD = 0.9    # Threshold for a high-quality solution
 
 # Pruning and Merging
-PRUNE_FREQUENCY = 1             # Prune every iteration
+PRUNE_RATIO = 0.5               # The ratio of nodes to prune in each iteration
 MERGE_FREQUENCY = 1             # Merge similar nodes every N iterations
-
-# Heuristic Pruning Parameters
-MAX_PATH_LENGTH = 9999
-REPETITION_PENALTY = 999
-MIN_QUESTION_SIMILARITY = 0.0
-
-# Depth-Aware and Budget-Aware Pruning
-DEPTH_AWARE_PRUNING_FACTOR = 0.0
-BUDGET_AWARE_PRUNING_FACTOR = 0.0
-
-# Early Stopping
-EARLY_STOPPING_PATIENCE = 999       # Number of iterations to wait for score improvement
-EARLY_STOPPING_THRESHOLD = 0.01   # Minimum score improvement to reset patience
 
 # Model Parameters
 TEMPERATURE = 0.8               # Model temperature
