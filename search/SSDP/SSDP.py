@@ -9,7 +9,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
 import time
-from search.bfs.call_joint_service import call
+from multiprocessing import Pool, Manager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # SSDP Configuration
 LIMIT = 50                    # Maximum search iterations
@@ -35,6 +36,28 @@ def assert_end(text):
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
 MAX_LEN_PER_STEP = 256
+
+def call_policy(question, path):
+    """Call the policy model to generate next step and get logprobs."""
+    url = "http://127.0.0.1:8000/v1/completions"
+    model = policy_fpath
+    query = f"Question: {question}\nAnswer:{path}"
+    pload = {
+        "prompt": query, 
+        "model": model, 
+        "temperature": TEMPERATURE, 
+        "max_tokens": 512,
+        "stop": ["\n"], 
+        "logprobs": 5,  # Request logprobs for scoring
+        "include_stop_str_in_output": True, 
+        "skip_special_tokens": False
+    }
+    response = requests.post(url, json=pload)
+    response_json = response.json()
+    choice = response_json["choices"][0]
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    
+    return choice, usage
 
 #### Helper for Scoring ####
 
@@ -73,11 +96,32 @@ class SSDPNode:
 
         if choice:
             self.content = choice["text"]
-            # The 'call' function from bfs.py does not return logprobs.
-            # I will need to adapt the scoring logic.
-            # For now, I will set the score to the value returned by the value function.
-            self.overall_score = choice["value"]
-            self.confidence_score = choice["value"]
+            self.logprobs_data = choice.get("logprobs", {})
+            self._calculate_scores_from_logprobs()
+
+    def _calculate_scores_from_logprobs(self):
+        """Calculate scores directly from the logprobs of the generation call."""
+        if not self.logprobs_data:
+            return
+
+        token_logprobs = self.logprobs_data.get("token_logprobs", [])
+        valid_logprobs = [lp for lp in token_logprobs if lp is not None]
+        
+        if not valid_logprobs:
+            return
+
+        # The overall score is the average confidence
+        self.confidence_score = _calculate_average_confidence(valid_logprobs)
+        self.overall_score = self.confidence_score
+        
+        # Store detailed info for potential analysis
+        self.detailed_scores = {
+            'confidence': self.confidence_score,
+            'details': {
+                'avg_confidence': self.confidence_score,
+                'token_logprobs': token_logprobs
+            }
+        }
 
     def get_primary_score(self):
         """Get the primary score for ranking (overall score)."""
@@ -126,6 +170,7 @@ class SSDPNode:
         if other_node.get_primary_score() > self.get_primary_score():
             self.overall_score = other_node.overall_score
             self.confidence_score = other_node.confidence_score
+            self.detailed_scores = other_node.detailed_scores
         
         self.merged_nodes.append(other_node)
         self.merged_nodes.extend(other_node.merged_nodes)
@@ -133,6 +178,12 @@ class SSDPNode:
     
     def get_score_breakdown(self):
         """Get detailed score breakdown for analysis."""
+        if self.detailed_scores:
+            return {
+                'overall_score': self.overall_score,
+                'confidence_score': self.confidence_score,
+                'component_scores': self.detailed_scores
+            }
         return {'overall_score': self.overall_score, 'confidence_score': self.confidence_score}
 
 class SSDPTree:
@@ -254,107 +305,135 @@ def fix_value(node):
         node.overall_score = 0.0
     return node
 
+def ssdp_worker(tree):
+    question = tree.question
+    iteration = 0
+    
+    start_time = time.time()
+    
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_PATHS) as executor:
+        while iteration < LIMIT:
+            nodes_to_expand = tree.get_nodes_to_expand(MAX_PARALLEL_PATHS)
+            if not nodes_to_expand:
+                break
+            
+            current_depth = max([node.get_depth() for node in nodes_to_expand]) if nodes_to_expand else 0
+            if current_depth >= MAX_DEPTH:
+                break
+            
+            future_to_node = {}
+            for node in nodes_to_expand:
+                if node.pruned or node.is_leaf: continue
+                budget = tree.adaptive_expansion_budget(node)
+                for _ in range(budget):
+                    path = node.print_path()
+                    future = executor.submit(call_policy, question, path)
+                    future_to_node[future] = node
+
+            for future in as_completed(future_to_node):
+                node = future_to_node[future]
+                try:
+                    choice, usage = future.result()
+                    
+                    # Update tree-specific token counts
+                    tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.total_completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_tokens += usage.get("total_tokens", 0)
+
+                    is_terminal = assert_end(choice["text"])
+                    new_node = tree.add_node(choice, node, is_terminal)
+                    fix_value(new_node)
+                except Exception as e:
+                    print(f"Error expanding node: {e}")
+                    continue
+
+            if iteration == 0: tree.fit_vectorizer()
+            if iteration % 2 == 0 and tree.vectorizer_fitted: tree.merge_similar_nodes()
+            if iteration % PRUNE_FREQUENCY == 0: tree.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
+            
+            iteration += 1
+            best_terminal = tree.get_best_terminal_node()
+            if best_terminal and best_terminal.get_primary_score() >= 0.8:
+                break
+            
+tree.runtime_seconds = time.time() - start_time
+    return tree
+
+def prepare_problem(instance):
+    """Prepare a problem for the worker by creating an SSDPTree."""
+    question = instance["question"]
+    answer = instance["answer"]
+    tree = SSDPTree(question, answer)
+    return tree
+
 #### Main Execution ####
 
 def main():
     """Main execution function."""
     print("Loading dataset...")
-    dataset = []
+    
+    # Count the number of lines for tqdm
     with open(data_fpath, "r") as f:
-        for line in f.readlines():
-            dataset.append(json.loads(line))
+        num_lines = sum(1 for line in f)
 
-    print(f"Creating {len(dataset)} SSDP trees...")
-    problems = []
-    for instance in dataset:
-        question = instance["question"]
-        answer = instance["answer"]
-        problem = SSDPTree(question, answer)
-        problems.append(problem)
+    print(f"Found {num_lines} problems.")
 
-    start_time = time.time()
+    manager = Manager()
+    shared_data = manager.dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
 
-    for i in range(LIMIT):
-        print(f"Iteration {i+1}/{LIMIT}")
-        
-        nodes_to_expand_batch = []
-        for problem in problems:
-            nodes_to_expand = problem.get_nodes_to_expand(MAX_PARALLEL_PATHS)
-            for node in nodes_to_expand:
-                if not node.pruned and not node.is_leaf:
-                    nodes_to_expand_batch.append(node)
-
-        if not nodes_to_expand_batch:
-            print("No more nodes to expand. Stopping.")
-            break
-
-        questions = [node.tree.question for node in nodes_to_expand_batch]
-        paths = [node.print_path() for node in nodes_to_expand_batch]
-        temperatures = [TEMPERATURE] * len(nodes_to_expand_batch)
-        stops = [["\n"]] * len(nodes_to_expand_batch)
-
-        next_steps, values, usages = call(questions, paths, temperatures, stops)
-
-        for node, next_step, value, usage in zip(nodes_to_expand_batch, next_steps, values, usages):
-            choice = {"text": next_step, "value": value}
-            is_terminal = assert_end(next_step)
-            new_node = node.tree.add_node(choice, node, is_terminal)
-            fix_value(new_node)
+    processed_problems = []
+    
+    print("Starting SSDP search with multiprocessing...")
+    
+    with Pool(processes=os.cpu_count()) as pool:
+        with open(data_fpath, "r") as f:
+            # Create a generator for problems
+            problem_generator = (json.loads(line) for line in f)
             
-            # Update token counts
-            node.tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
-            node.tree.total_completion_tokens += usage.get("completion_tokens", 0)
-            node.tree.total_tokens += usage.get("total_tokens", 0)
+            # Prepare arguments for the worker
+            worker_args = (prepare_problem(instance) for instance in problem_generator)
 
-        # Fit vectorizer on the first iteration
-        if i == 0:
-            for problem in problems:
-                problem.fit_vectorizer()
+            try:
+                for result in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
+                    processed_problems.append(result)
+                    shared_data["prompt_tokens"] += result.total_prompt_tokens
+                    shared_data["completion_tokens"] += result.total_completion_tokens
+                    shared_data["total_tokens"] += result.total_tokens
+            except Exception as e:
+                print(f"An error occurred during multiprocessing: {e}")
+            finally:
+                pool.close()
+                pool.join()
 
-        # Merge and prune
-        if i % 2 == 0:
-            for problem in problems:
-                if problem.vectorizer_fitted:
-                    problem.merge_similar_nodes()
-        
-        if i % PRUNE_FREQUENCY == 0:
-            for problem in problems:
-                problem.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
-
-    total_runtime = time.time() - start_time
 
     print(f"Saving results to {output_fpath}")
     with open(output_fpath, "wb") as f:
-        pickle.dump(problems, f)
+        pickle.dump(processed_problems, f)
 
     # Print summary statistics
-    if problems:
+    if processed_problems:
         print("\n=== SSDP Search Complete ===")
-        total_nodes = sum(len(p.all_nodes) for p in problems)
-        total_expansions = sum(p.total_expansions for p in problems)
-        total_merges = sum(p.total_merges for p in problems)
-        total_prunes = sum(p.total_prunes for p in problems)
-        
-        total_prompt_tokens = sum(p.total_prompt_tokens for p in problems)
-        total_completion_tokens = sum(p.total_completion_tokens for p in problems)
-        total_tokens = sum(p.total_tokens for p in problems)
+        total_nodes = sum(len(p.all_nodes) for p in processed_problems)
+        total_expansions = sum(p.total_expansions for p in processed_problems)
+        total_merges = sum(p.total_merges for p in processed_problems)
+        total_prunes = sum(p.total_prunes for p in processed_problems)
+        total_runtime = sum(p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds'))
 
         print(f"Total nodes created: {total_nodes}")
         print(f"Total expansions: {total_expansions}")
         print(f"Total merges: {total_merges}")
         print(f"Total prunes: {total_prunes}")
-        if len(problems) > 0:
-            print(f"Average nodes per problem: {total_nodes / len(problems):.1f}")
+        if len(processed_problems) > 0:
+            print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
         print(f"\n--- Metrics ---")
         print(f"Total runtime: {total_runtime:.2f} seconds")
-        if len(problems) > 0:
-            valid_runtimes = [p.runtime_seconds for p in problems if hasattr(p, 'runtime_seconds')]
+        if len(processed_problems) > 0:
+            valid_runtimes = [p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds')]
             if valid_runtimes:
-                # runtime is not calculated per problem anymore
-                pass
-        print(f"Total prompt tokens: {total_prompt_tokens}")
-        print(f"Total completion tokens: {total_completion_tokens}")
-        print(f"Total tokens: {total_tokens}")
+                print(f"Average runtime per problem: {sum(valid_runtimes) / len(valid_runtimes):.2f} seconds")
+        print(f"Total prompt tokens: {shared_data['prompt_tokens']}")
+        print(f"Total completion tokens: {shared_data['completion_tokens']}")
+        print(f"Total tokens: {shared_data['total_tokens']}")
 
 
 if __name__ == "__main__":
