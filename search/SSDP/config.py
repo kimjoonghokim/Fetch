@@ -11,12 +11,12 @@ MAX_DEPTH = 10                  # Maximum reasoning depth
 EXPLORE_EXPLOIT_THRESHOLD = 0.5 # Score threshold to switch from exploit to explore
 
 # Scoring Thresholds
-OVERALL_SCORE_THRESHOLD = 0.3   # Minimum overall score to keep a path
+OVERALL_SCORE_THRESHOLD = 0.4   # Start with a moderate threshold
 SIMILARITY_THRESHOLD = 0.85     # Similarity threshold for merging nodes
 HIGH_QUALITY_THRESHOLD = 0.9    # Threshold for a high-quality solution
 
 # Pruning and Merging
-PRUNE_FREQUENCY = 999             # Effectively disable pruning
+PRUNE_FREQUENCY = 1             # Prune every iteration
 MERGE_FREQUENCY = 1             # Merge similar nodes every N iterations
 
 # Heuristic Pruning Parameters
