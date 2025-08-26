@@ -206,8 +206,8 @@ class SSDPTree:
         self.total_merges = 0
         self.total_prunes = 0
         self.runtime_seconds = 0.0
-        self.prompt_tokens = 0
-        self.completion_tokens = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
         self.total_tokens = 0
     
     def fit_vectorizer(self):
@@ -329,8 +329,8 @@ def ssdp_worker(args):
                     choice, usage = call_policy(question, path)
                     
                     # Update tree-specific token counts
-                    tree.prompt_tokens += usage.get("prompt_tokens", 0)
-                    tree.completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.total_completion_tokens += usage.get("completion_tokens", 0)
                     tree.total_tokens += usage.get("total_tokens", 0)
 
                     # Update shared token counts
