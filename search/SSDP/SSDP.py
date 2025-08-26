@@ -18,7 +18,7 @@ MAX_PARALLEL_PATHS = 1        # Expand only the single best node
 MIN_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
 MAX_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
 TEMPERATURE = 0.8             # Model temperature
-OVERALL_SCORE_THRESHOLD = 0.3 # Minimum overall score to keep a path
+OVERALL_SCORE_THRESHOLD = 0.5 # Increased from 0.3 for more aggressive pruning
 SIMILARITY_THRESHOLD = 0.85   # Similarity threshold for merging nodes
 PRUNE_FREQUENCY = 3           # Prune every N iterations
 MAX_DEPTH = 10               # Maximum reasoning depth
@@ -267,11 +267,14 @@ class SSDPTree:
                     self.total_merges += 1
     
     def prune_low_scoring_nodes(self, threshold=OVERALL_SCORE_THRESHOLD):
+        pruned_count = 0
         for node in self.all_nodes:
             if not node.pruned and node.content is not None and node.get_primary_score() < threshold:
                 node.pruned = True
                 self.pruned_nodes.append(node)
                 self.total_prunes += 1
+                pruned_count += 1
+        print(f"Pruned {pruned_count} nodes at threshold {threshold}")
     
     def adaptive_expansion_budget(self, node):
         score = node.get_primary_score()
