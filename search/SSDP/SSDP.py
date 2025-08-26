@@ -14,9 +14,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # SSDP Configuration
 LIMIT = 50                    # Maximum search iterations
-MAX_PARALLEL_PATHS = 8        # Maximum number of parallel paths to explore
-MIN_EXPANSION_BUDGET = 3      # Minimum expansions per node
-MAX_EXPANSION_BUDGET = 5      # Maximum expansions per node
+MAX_PARALLEL_PATHS = 1        # Expand only the single best node
+MIN_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
+MAX_EXPANSION_BUDGET = 10     # Set a fixed expansion budget
 TEMPERATURE = 0.8             # Model temperature
 OVERALL_SCORE_THRESHOLD = 0.3 # Minimum overall score to keep a path
 SIMILARITY_THRESHOLD = 0.85   # Similarity threshold for merging nodes
