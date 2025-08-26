@@ -5,6 +5,7 @@ import numpy as np
 import jsonlines
 import requests
 from tqdm import tqdm
+import time
 
 LIMIT=50
 BUDGET=5
@@ -38,7 +39,10 @@ def call_policy(question, path):
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
             "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
     response =requests.post(url, json=pload)
-    return json.loads(response.content)["choices"][0]["text"]
+    response_json = response.json()
+    choice = response_json["choices"][0]
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return choice["text"], usage
 
 def call_value(question, path):
     url = "http://127.0.0.1:8002/predict"
@@ -80,6 +84,10 @@ class Tree:
         self.all_nodes = []
         self.root = Node(None, 0, None, 0, self)
         self.all_nodes.append(self.root)
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.runtime_seconds = 0.0
 
     def return_timestep(self):
         return max([node.timestep for node in self.all_nodes])
@@ -110,7 +118,9 @@ for instance in dataset:
     problems.append(problem)
 
 import multiprocessing
+
 def worker(tree):
+    start_time = time.time()
     question = tree.question
     for _ in range(LIMIT):
         actions = tree.get_beam_to_expand(BEAM)
@@ -120,7 +130,10 @@ def worker(tree):
                     # expand this state
                     # get next step content
                     path = action.print_path()
-                    next_step = call_policy(question, path)
+                    next_step, usage = call_policy(question, path)
+                    tree.prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_tokens += usage.get("total_tokens", 0)
                     # get next step value
                     next_value = call_value(question, path + next_step)
                     state = tree.add_node(next_step, next_value, action, assert_end(next_step))
@@ -128,6 +141,7 @@ def worker(tree):
                     # print((next_step, next_value))
         else:
             break
+    tree.runtime_seconds = time.time() - start_time
     return tree
 
 pool = multiprocessing.Pool(80)
