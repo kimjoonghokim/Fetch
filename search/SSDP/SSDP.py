@@ -347,9 +347,12 @@ def ssdp_worker(tree):
                     print(f"Error expanding node: {e}")
                     continue
 
-            if iteration == 0: tree.fit_vectorizer()
-            if iteration % 2 == 0 and tree.vectorizer_fitted: tree.merge_similar_nodes()
-            if iteration % PRUNE_FREQUENCY == 0: tree.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
+            if iteration == 0:
+                tree.fit_vectorizer()
+            if iteration % 2 == 0 and tree.vectorizer_fitted:
+                tree.merge_similar_nodes()
+            if iteration % PRUNE_FREQUENCY == 0:
+                tree.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
             
             iteration += 1
             best_terminal = tree.get_best_terminal_node()
