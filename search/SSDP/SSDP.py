@@ -9,6 +9,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
 import time
+from multiprocessing import Pool, Manager
 
 # SSDP Configuration
 LIMIT = 50                    # Maximum search iterations
@@ -35,7 +36,7 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
 MAX_LEN_PER_STEP = 256
 
-def call_policy(question, path):
+def call_policy(question, path, shared_data):
     """Call the policy model to generate next step and get logprobs."""
     url = "http://127.0.0.1:8000/v1/completions"
     model = policy_fpath
@@ -54,6 +55,12 @@ def call_policy(question, path):
     response_json = response.json()
     choice = response_json["choices"][0]
     usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    
+    # Update shared usage data
+    shared_data["prompt_tokens"] += usage.get("prompt_tokens", 0)
+    shared_data["completion_tokens"] += usage.get("completion_tokens", 0)
+    shared_data["total_tokens"] += usage.get("total_tokens", 0)
+    
     return choice, usage
 
 #### Helper for Scoring ####
@@ -204,9 +211,6 @@ class SSDPTree:
         self.total_merges = 0
         self.total_prunes = 0
         self.runtime_seconds = 0.0
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
-        self.total_tokens = 0
     
     def fit_vectorizer(self):
         if not self.vectorizer_fitted:
@@ -302,20 +306,18 @@ def fix_value(node):
         node.overall_score = 0.0
     return node
 
-def ssdp_worker(tree):
+def ssdp_worker(args):
+    tree, shared_data = args
     question = tree.question
     iteration = 0
-    print(f"Starting SSDP for question: {question[:50]}...")
     
     while iteration < LIMIT:
         nodes_to_expand = tree.get_nodes_to_expand(MAX_PARALLEL_PATHS)
         if not nodes_to_expand:
-            print(f"No nodes to expand at iteration {iteration}")
             break
         
         current_depth = max([node.get_depth() for node in nodes_to_expand]) if nodes_to_expand else 0
         if current_depth >= MAX_DEPTH:
-            print(f"Reached maximum depth {MAX_DEPTH}")
             break
         
         for node in nodes_to_expand:
@@ -324,12 +326,7 @@ def ssdp_worker(tree):
             for _ in range(budget):
                 try:
                     path = node.print_path()
-                    choice, usage = call_policy(question, path)
-                    
-                    tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
-                    tree.total_completion_tokens += usage.get("completion_tokens", 0)
-                    tree.total_tokens += usage.get("total_tokens", 0)
-                    
+                    choice, _ = call_policy(question, path, shared_data)
                     is_terminal = assert_end(choice["text"])
                     new_node = tree.add_node(choice, node, is_terminal)
                     fix_value(new_node)
@@ -344,10 +341,8 @@ def ssdp_worker(tree):
         iteration += 1
         best_terminal = tree.get_best_terminal_node()
         if best_terminal and best_terminal.get_primary_score() >= 0.8:
-            print(f"Found high-quality solution at iteration {iteration}")
             break
     
-    tree.print_statistics()
     return tree
 
 #### Main Execution ####
@@ -368,19 +363,15 @@ def main():
         problem = SSDPTree(question, answer)
         problems.append(problem)
     
-    print("Starting SSDP search...")
+    print("Starting SSDP search with multiprocessing...")
     
-    processed_problems = []
-    for problem in tqdm(problems, desc="SSDP Search"):
-        try:
-            start_time = time.time()
-            result = ssdp_worker(problem)
-            result.runtime_seconds = time.time() - start_time
-            processed_problems.append(result)
-        except Exception as e:
-            print(f"Error processing problem: {e}")
-            processed_problems.append(problem)
+    manager = Manager()
+    shared_data = manager.dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
     
+    with Pool(processes=os.cpu_count()) as pool:
+        args = [(problem, shared_data) for problem in problems]
+        processed_problems = list(tqdm(pool.imap(ssdp_worker, args), total=len(problems), desc="SSDP Search"))
+
     print(f"Saving results to {output_fpath}")
     with open(output_fpath, "wb") as f:
         pickle.dump(processed_problems, f)
@@ -391,10 +382,7 @@ def main():
     total_expansions = sum(p.total_expansions for p in processed_problems)
     total_merges = sum(p.total_merges for p in processed_problems)
     total_prunes = sum(p.total_prunes for p in processed_problems)
-    total_runtime = sum(p.runtime_seconds for p in processed_problems)
-    total_prompt_tokens = sum(p.total_prompt_tokens for p in processed_problems)
-    total_completion_tokens = sum(p.total_completion_tokens for p in processed_problems)
-    total_tokens = sum(p.total_tokens for p in processed_problems)
+    total_runtime = sum(p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds'))
     
     print(f"Total nodes created: {total_nodes}")
     print(f"Total expansions: {total_expansions}")
@@ -405,10 +393,13 @@ def main():
     print(f"\n--- Metrics ---")
     print(f"Total runtime: {total_runtime:.2f} seconds")
     if len(processed_problems) > 0:
-        print(f"Average runtime per problem: {total_runtime / len(processed_problems):.2f} seconds")
-    print(f"Total prompt tokens: {total_prompt_tokens}")
-    print(f"Total completion tokens: {total_completion_tokens}")
-    print(f"Total tokens: {total_tokens}")
+        valid_runtimes = [p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds')]
+        if valid_runtimes:
+            print(f"Average runtime per problem: {sum(valid_runtimes) / len(valid_runtimes):.2f} seconds")
+    print(f"Total prompt tokens: {shared_data['prompt_tokens']}")
+    print(f"Total completion tokens: {shared_data['completion_tokens']}")
+    print(f"Total tokens: {shared_data['total_tokens']}")
 
 if __name__ == "__main__":
     main()
+
