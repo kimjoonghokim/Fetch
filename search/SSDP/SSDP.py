@@ -359,7 +359,7 @@ def ssdp_worker(tree):
             if best_terminal and best_terminal.get_primary_score() >= 0.8:
                 break
             
-tree.runtime_seconds = time.time() - start_time
+    tree.runtime_seconds = time.time() - start_time
     return tree
 
 def prepare_problem(instance):
