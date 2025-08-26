@@ -304,8 +304,7 @@ def fix_value(node):
         node.overall_score = 0.0
     return node
 
-def ssdp_worker(args):
-    tree, shared_data = args
+def ssdp_worker(tree):
     question = tree.question
     iteration = 0
     
@@ -333,11 +332,6 @@ def ssdp_worker(args):
                     tree.total_completion_tokens += usage.get("completion_tokens", 0)
                     tree.total_tokens += usage.get("total_tokens", 0)
 
-                    # Update shared token counts
-                    shared_data["prompt_tokens"] += usage.get("prompt_tokens", 0)
-                    shared_data["completion_tokens"] += usage.get("completion_tokens", 0)
-                    shared_data["total_tokens"] += usage.get("total_tokens", 0)
-
                     is_terminal = assert_end(choice["text"])
                     new_node = tree.add_node(choice, node, is_terminal)
                     fix_value(new_node)
@@ -355,14 +349,14 @@ def ssdp_worker(args):
             break
             
     tree.runtime_seconds = time.time() - start_time
-    return tree, shared_data
+    return tree
 
-def prepare_problem(instance, shared_data):
+def prepare_problem(instance):
     """Prepare a problem for the worker by creating an SSDPTree."""
     question = instance["question"]
     answer = instance["answer"]
     tree = SSDPTree(question, answer)
-    return (tree, shared_data)
+    return tree
 
 #### Main Execution ####
 
@@ -391,16 +385,15 @@ def main():
             problem_generator = (json.loads(line) for line in f)
             
             # Prepare arguments for the worker
-            worker_args = (prepare_problem(instance, shared_data) for instance in problem_generator)
+            worker_args = (prepare_problem(instance) for instance in problem_generator)
 
             try:
                 # Use imap to process problems as they are generated
-                for result, result_shared_data in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
+                for result in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
                     processed_problems.append(result)
-                    # Update shared data with the results from the worker
-                    shared_data["prompt_tokens"] += result_shared_data["prompt_tokens"]
-                    shared_data["completion_tokens"] += result_shared_data["completion_tokens"]
-                    shared_data["total_tokens"] += result_shared_data["total_tokens"]
+                    shared_data["prompt_tokens"] += result.total_prompt_tokens
+                    shared_data["completion_tokens"] += result.total_completion_tokens
+                    shared_data["total_tokens"] += result.total_tokens
             except Exception as e:
                 print(f"An error occurred during multiprocessing: {e}")
             finally:
