@@ -15,7 +15,7 @@ from collections import Counter
 from config import *
 
 # File paths
-output_fpath = f"test_gsm8k_ssdp_p{MAX_PARALLEL_PATHS}_t{OVERALL_SCORE_THRESHOLD}.pkl"
+output_fpath = f"test_gsm8k_ssdp_v2.pkl"
 
 # Task dependent functions
 def assert_end(text):
@@ -60,7 +60,7 @@ def _calculate_average_confidence(logprobs: List[float]) -> float:
 
 class SSDPNode:
     """
-    Enhanced node for SSDP algorithm with confidence score calculated from generation metadata.
+    Enhanced node for the new SSDP algorithm.
     """
     
     def __init__(self, choice, parent, timestep, tree, is_leaf=False):
@@ -77,46 +77,47 @@ class SSDPNode:
         # SSDP-specific attributes
         self.overall_score = 0.0
         self.confidence_score = 0.0
-        self.detailed_scores = None
         self.semantic_embedding = None
-        self.merged_nodes = []  # Track nodes that were merged into this one
+        self.merged_nodes = []
         self.pruned = False
+        self.status = "exploit"  # New: explore/exploit status
+
+        if parent:
+            self.status = parent.status
 
         if choice:
             self.content = choice["text"]
             self.logprobs_data = choice.get("logprobs", {})
-            self._calculate_scores_from_logprobs()
+            self._calculate_scores()
 
-    def _calculate_scores_from_logprobs(self):
-        """Calculate scores directly from the logprobs of the generation call."""
+    def _calculate_scores(self):
+        """Calculate scores based on confidence, parent's score, and other factors."""
         if not self.logprobs_data:
             return
 
+        # Confidence Score
         token_logprobs = self.logprobs_data.get("token_logprobs", [])
         valid_logprobs = [lp for lp in token_logprobs if lp is not None]
+        if valid_logprobs:
+            self.confidence_score = _calculate_average_confidence(valid_logprobs)
         
-        if not valid_logprobs:
-            return
+        # Parent's Score Inheritance
+        parent_score = self.parent.overall_score if self.parent else 0.0
+        
+        # Combine scores (tunable weights can be added to config.py)
+        self.overall_score = (0.7 * self.confidence_score) + (0.3 * parent_score)
 
-        # The overall score is the average confidence
-        self.confidence_score = _calculate_average_confidence(valid_logprobs)
-        self.overall_score = self.confidence_score
-        
-        # Store detailed info for potential analysis
-        self.detailed_scores = {
-            'confidence': self.confidence_score,
-            'details': {
-                'avg_confidence': self.confidence_score,
-                'token_logprobs': token_logprobs
-            }
-        }
+    def update_score_with_merging(self, similar_nodes_count):
+        """Update the score based on the number of similar nodes (voting)."""
+        # The more similar nodes, the higher the score
+        self.overall_score += (similar_nodes_count * 0.05) # Tunable factor
 
     def get_primary_score(self):
         """Get the primary score for ranking (overall score)."""
         return self.overall_score
     
     def get_depth(self):
-        return len(self.return_path()) + 1
+        return self.timestep
     
     def return_path(self):
         if self.content is None:
@@ -152,38 +153,16 @@ class SSDPNode:
         
         similarity = cosine_similarity([emb1], [emb2])[0, 0]
         return similarity >= threshold
-    
-    def merge_with(self, other_node):
-        """Merge another node into this one."""
-        if other_node.get_primary_score() > self.get_primary_score():
-            self.overall_score = other_node.overall_score
-            self.confidence_score = other_node.confidence_score
-            self.detailed_scores = other_node.detailed_scores
-        
-        self.merged_nodes.append(other_node)
-        self.merged_nodes.extend(other_node.merged_nodes)
-        other_node.pruned = True
-    
-    def get_score_breakdown(self):
-        """Get detailed score breakdown for analysis."""
-        if self.detailed_scores:
-            return {
-                'overall_score': self.overall_score,
-                'confidence_score': self.confidence_score,
-                'component_scores': self.detailed_scores
-            }
-        return {'overall_score': self.overall_score, 'confidence_score': self.confidence_score}
 
 class SSDPTree:
     """
-    SSDP Tree with semantic similarity-based dynamic pruning.
+    The new SSDP Tree with all the new features.
     """
     
     def __init__(self, question, answer):
         self.question = question
         self.answer = answer
         self.all_nodes = []
-        self.pruned_nodes = []
         self.root = SSDPNode(None, None, 0, self)
         self.all_nodes.append(self.root)
         
@@ -198,7 +177,11 @@ class SSDPTree:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_tokens = 0
-    
+
+        # Early stopping
+        self.best_score_so_far = 0.0
+        self.patience_counter = 0
+
     def fit_vectorizer(self):
         if not self.vectorizer_fitted:
             texts = [node.content for node in self.all_nodes if node.content is not None]
@@ -210,9 +193,6 @@ class SSDPTree:
                 except:
                     pass
     
-    def return_timestep(self):
-        return max([node.timestep for node in self.all_nodes if not node.pruned])
-    
     def add_node(self, choice, parent, is_leaf=False):
         """Add a new node to the tree."""
         node = SSDPNode(choice, parent, parent.timestep + 1, self, is_leaf)
@@ -221,96 +201,80 @@ class SSDPTree:
         self.total_expansions += 1
         return node
     
-    def get_active_nodes_at_level(self, timestep=None):
-        if timestep is None:
-            timestep = self.return_timestep()
-        return [node for node in self.all_nodes if node.timestep == timestep and not node.pruned and not node.is_leaf]
-    
-    def get_nodes_to_expand(self, max_paths=MAX_PARALLEL_PATHS):
-        current_level_nodes = self.get_active_nodes_at_level()
-        if not current_level_nodes:
-            prev_timestep = self.return_timestep() - 1
-            if prev_timestep >= 0:
-                current_level_nodes = self.get_active_nodes_at_level(prev_timestep)
+    def get_nodes_to_expand(self):
+        exploit_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf and n.status == "exploit"]
+        explore_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf and n.status == "explore"]
         
-        scored_nodes = [(node, node.get_primary_score()) for node in current_level_nodes]
-        scored_nodes.sort(key=lambda x: x[1], reverse=True)
-        return [node for node, score in scored_nodes[:max_paths]]
+        exploit_nodes.sort(key=lambda x: x.get_primary_score(), reverse=True)
+        explore_nodes.sort(key=lambda x: x.get_primary_score(), reverse=True)
+
+        # Prioritize exploit nodes, then explore nodes
+        return exploit_nodes[:MAX_PARALLEL_PATHS] + explore_nodes[:MAX_PARALLEL_PATHS]
     
-    def merge_similar_nodes(self, nodes=None):
-        if nodes is None:
-            nodes = self.get_active_nodes_at_level()
-        if not nodes or not self.vectorizer_fitted:
+    def merge_similar_nodes(self):
+        nodes_at_current_level = [n for n in self.all_nodes if not n.pruned and not n.is_leaf]
+        if not nodes_at_current_level or not self.vectorizer_fitted:
             return
-        
-        merged_pairs = []
-        for i, node1 in enumerate(nodes):
-            if node1.pruned: continue
-            for j, node2 in enumerate(nodes[i+1:], i+1):
-                if node2.pruned: continue
-                if node1.is_similar_to(node2, self.vectorizer):
-                    if node2.get_primary_score() > node1.get_primary_score():
-                        node2.merge_with(node1)
-                    else:
-                        node1.merge_with(node2)
-                    self.total_merges += 1
-    
-    def prune_low_scoring_nodes(self, threshold=OVERALL_SCORE_THRESHOLD):
+
+        # Group nodes by level
+        nodes_by_level = {}
+        for node in nodes_at_current_level:
+            level = node.get_depth()
+            if level not in nodes_by_level:
+                nodes_by_level[level] = []
+            nodes_by_level[level].append(node)
+
+        for level, nodes in nodes_by_level.items():
+            merged_in_level = 0
+            for i, node1 in enumerate(nodes):
+                if node1.pruned: continue
+                similar_nodes = []
+                for j, node2 in enumerate(nodes[i+1:], i+1):
+                    if node2.pruned: continue
+                    if node1.is_similar_to(node2, self.vectorizer):
+                        similar_nodes.append(node2)
+                
+                if similar_nodes:
+                    # Merge similar nodes into the one with the highest score
+                    all_nodes_to_merge = [node1] + similar_nodes
+                    best_node = max(all_nodes_to_merge, key=lambda x: x.get_primary_score())
+                    for node_to_merge in all_nodes_to_merge:
+                        if node_to_merge != best_node:
+                            best_node.merged_nodes.append(node_to_merge)
+                            node_to_merge.pruned = True
+                            merged_in_level += 1
+                    best_node.update_score_with_merging(len(similar_nodes))
+            self.total_merges += merged_in_level
+
+    def prune_nodes(self, iteration):
         pruned_count = 0
         for node in self.all_nodes:
-            if not node.pruned and node.content is not None and node.get_primary_score() < threshold:
-                node.pruned = True
-                self.pruned_nodes.append(node)
-                self.total_prunes += 1
-                pruned_count += 1
-        print(f"Pruned {pruned_count} nodes at threshold {threshold}")
-    
-    def adaptive_expansion_budget(self, node):
-        score = node.get_primary_score()
-        if score >= HIGH_QUALITY_THRESHOLD: return MAX_EXPANSION_BUDGET
-        elif score >= 0.6: return MAX_EXPANSION_BUDGET - 1
-        elif score >= 0.4: return MIN_EXPANSION_BUDGET + 1
-        else: return MIN_EXPANSION_BUDGET
-    
+            if not node.pruned:
+                # Depth-aware and budget-aware pruning threshold
+                depth_penalty = node.get_depth() * DEPTH_AWARE_PRUNING_FACTOR
+                budget_penalty = (iteration / LIMIT) * BUDGET_AWARE_PRUNING_FACTOR
+                dynamic_threshold = OVERALL_SCORE_THRESHOLD + depth_penalty + budget_penalty
+
+                if node.get_primary_score() < dynamic_threshold:
+                    node.pruned = True
+                    pruned_count += 1
+        self.total_prunes += pruned_count
+
+    def check_early_stopping(self):
+        best_terminal = self.get_best_terminal_node()
+        if best_terminal:
+            if best_terminal.get_primary_score() > self.best_score_so_far + EARLY_STOPPING_THRESHOLD:
+                self.best_score_so_far = best_terminal.get_primary_score()
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
+        
+        return self.patience_counter >= EARLY_STOPPING_PATIENCE
+
     def get_best_terminal_node(self):
         terminal_nodes = [node for node in self.all_nodes if node.is_leaf and not node.pruned]
         if not terminal_nodes: return None
         return max(terminal_nodes, key=lambda x: x.get_primary_score())
-    
-    def print_statistics(self):
-        active_nodes = len([n for n in self.all_nodes if not n.pruned])
-        terminal_nodes = len([n for n in self.all_nodes if n.is_leaf and not n.pruned])
-        print(f"SSDP Statistics:")
-        print(f"  Total nodes: {len(self.all_nodes)}, Active: {active_nodes}, Terminal: {terminal_nodes}")
-        print(f"  Total expansions: {self.total_expansions}, Merges: {self.total_merges}, Prunes: {self.total_prunes}")
-        if terminal_nodes > 0:
-            best_terminal = self.get_best_terminal_node()
-            print(f"  Best terminal score: {best_terminal.get_primary_score():.3f}")
-
-def is_repetitive(text, repetition_penalty):
-    """Check if the text has repetitive phrases."""
-    words = text.split()
-    if len(words) < 3:
-        return False
-    trigrams = [" ".join(words[i:i+3]) for i in range(len(words) - 2)]
-    if not trigrams:
-        return False
-    counts = Counter(trigrams)
-    if counts.most_common(1)[0][1] > repetition_penalty:
-        return True
-    return False
-
-def is_dissimilar_to_question(text, question, vectorizer, min_similarity):
-    """Check if the text is semantically dissimilar to the question."""
-    if not text or not question or not vectorizer.get_feature_names_out().any():
-        return False
-    try:
-        text_embedding = vectorizer.transform([text]).toarray()[0]
-        question_embedding = vectorizer.transform([question]).toarray()[0]
-        similarity = cosine_similarity([text_embedding], [question_embedding])[0, 0]
-        return similarity < min_similarity
-    except:
-        return False
 
 def fix_value(node):
     if node.parent is not None and node.content is not None:
@@ -330,6 +294,10 @@ def fix_value(node):
         
     if is_dissimilar_to_question(node.content, node.tree.question, node.tree.vectorizer, MIN_QUESTION_SIMILARITY):
         node.overall_score = 0.0
+
+    # Update explore/exploit status
+    if node.status == "exploit" and node.get_primary_score() < EXPLORE_EXPLOIT_THRESHOLD:
+        node.status = "explore"
         
     return node
 
@@ -338,32 +306,25 @@ def ssdp_worker(tree):
     iteration = 0
     
     start_time = time.time()
+    tree.fit_vectorizer()
     
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_PATHS) as executor:
         while iteration < LIMIT:
-            nodes_to_expand = tree.get_nodes_to_expand(MAX_PARALLEL_PATHS)
+            nodes_to_expand = tree.get_nodes_to_expand()
             if not nodes_to_expand:
-                break
-            
-            current_depth = max([node.get_depth() for node in nodes_to_expand]) if nodes_to_expand else 0
-            if current_depth >= MAX_DEPTH:
                 break
             
             future_to_node = {}
             for node in nodes_to_expand:
-                if node.pruned or node.is_leaf: continue
-                budget = tree.adaptive_expansion_budget(node)
-                for _ in range(budget):
-                    path = node.print_path()
-                    future = executor.submit(call_policy, question, path)
-                    future_to_node[future] = node
+                path = node.print_path()
+                future = executor.submit(call_policy, question, path)
+                future_to_node[future] = node
 
             for future in as_completed(future_to_node):
                 node = future_to_node[future]
                 try:
                     choice, usage = future.result()
                     
-                    # Update tree-specific token counts
                     tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
                     tree.total_completion_tokens += usage.get("completion_tokens", 0)
                     tree.total_tokens += usage.get("total_tokens", 0)
@@ -375,17 +336,16 @@ def ssdp_worker(tree):
                     print(f"Error expanding node: {e}")
                     continue
 
-            if iteration == 0:
-                tree.fit_vectorizer()
-            if iteration % MERGE_FREQUENCY == 0 and tree.vectorizer_fitted:
+            if iteration % MERGE_FREQUENCY == 0:
                 tree.merge_similar_nodes()
             if iteration % PRUNE_FREQUENCY == 0:
-                tree.prune_low_scoring_nodes(OVERALL_SCORE_THRESHOLD)
+                tree.prune_nodes(iteration)
             
-            iteration += 1
-            best_terminal = tree.get_best_terminal_node()
-            if best_terminal and best_terminal.get_primary_score() >= HIGH_QUALITY_THRESHOLD:
+            if tree.check_early_stopping():
+                print("Early stopping due to no improvement.")
                 break
+
+            iteration += 1
             
     tree.runtime_seconds = time.time() - start_time
     return tree
@@ -403,14 +363,10 @@ def main():
     """Main execution function."""
     print("Loading dataset...")
     
-    # Count the number of lines for tqdm
     with open(DATA_PATH, "r") as f:
         num_lines = sum(1 for line in f)
 
     print(f"Found {num_lines} problems.")
-
-    manager = Manager()
-    shared_data = manager.dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
 
     processed_problems = []
     
@@ -418,18 +374,12 @@ def main():
     
     with Pool(processes=os.cpu_count()) as pool:
         with open(DATA_PATH, "r") as f:
-            # Create a generator for problems
             problem_generator = (json.loads(line) for line in f)
-            
-            # Prepare arguments for the worker
             worker_args = (prepare_problem(instance) for instance in problem_generator)
 
             try:
                 for result in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
                     processed_problems.append(result)
-                    shared_data["prompt_tokens"] += result.total_prompt_tokens
-                    shared_data["completion_tokens"] += result.total_completion_tokens
-                    shared_data["total_tokens"] += result.total_tokens
             except Exception as e:
                 print(f"An error occurred during multiprocessing: {e}")
             finally:
@@ -448,7 +398,10 @@ def main():
         total_expansions = sum(p.total_expansions for p in processed_problems)
         total_merges = sum(p.total_merges for p in processed_problems)
         total_prunes = sum(p.total_prunes for p in processed_problems)
-        total_runtime = sum(p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds'))
+        total_runtime = sum(p.runtime_seconds for p in processed_problems)
+        total_prompt_tokens = sum(p.total_prompt_tokens for p in processed_problems)
+        total_completion_tokens = sum(p.total_completion_tokens for p in processed_problems)
+        total_tokens = sum(p.total_tokens for p in processed_problems)
 
         print(f"Total nodes created: {total_nodes}")
         print(f"Total expansions: {total_expansions}")
@@ -459,12 +412,10 @@ def main():
         print(f"\n--- Metrics ---")
         print(f"Total runtime: {total_runtime:.2f} seconds")
         if len(processed_problems) > 0:
-            valid_runtimes = [p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds')]
-            if valid_runtimes:
-                print(f"Average runtime per problem: {sum(valid_runtimes) / len(valid_runtimes):.2f} seconds")
-        print(f"Total prompt tokens: {shared_data['prompt_tokens']}")
-        print(f"Total completion tokens: {shared_data['completion_tokens']}")
-        print(f"Total tokens: {shared_data['total_tokens']}")
+            print(f"Average runtime per problem: {total_runtime / len(processed_problems):.2f} seconds")
+        print(f"Total prompt tokens: {total_prompt_tokens}")
+        print(f"Total completion tokens: {total_completion_tokens}")
+        print(f"Total tokens: {total_tokens}")
 
 
 if __name__ == "__main__":
