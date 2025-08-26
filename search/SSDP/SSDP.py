@@ -311,6 +311,8 @@ def ssdp_worker(args):
     question = tree.question
     iteration = 0
     
+    start_time = time.time()
+    
     while iteration < LIMIT:
         nodes_to_expand = tree.get_nodes_to_expand(MAX_PARALLEL_PATHS)
         if not nodes_to_expand:
@@ -342,63 +344,90 @@ def ssdp_worker(args):
         best_terminal = tree.get_best_terminal_node()
         if best_terminal and best_terminal.get_primary_score() >= 0.8:
             break
-    
-    return tree
+            
+    tree.runtime_seconds = time.time() - start_time
+    return tree, shared_data
+
+def prepare_problem(instance, shared_data):
+    """Prepare a problem for the worker by creating an SSDPTree."""
+    question = instance["question"]
+    answer = instance["answer"]
+    tree = SSDPTree(question, answer)
+    return (tree, shared_data)
 
 #### Main Execution ####
 
 def main():
     """Main execution function."""
     print("Loading dataset...")
-    dataset = []
-    with open(data_fpath, "r") as f:
-        for line in f.readlines():
-            dataset.append(json.loads(line))
     
-    print(f"Creating {len(dataset)} SSDP trees...")
-    problems = []
-    for instance in dataset:
-        question = instance["question"]
-        answer = instance["answer"]
-        problem = SSDPTree(question, answer)
-        problems.append(problem)
+    # Count the number of lines for tqdm to show progress
+    with open(data_fpath, "r") as f:
+        num_lines = sum(1 for line in f)
+
+    print(f"Found {num_lines} problems.")
+
+    # Use a manager to share data between processes
+    manager = Manager()
+    shared_data = manager.dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+
+    processed_problems = []
     
     print("Starting SSDP search with multiprocessing...")
     
-    manager = Manager()
-    shared_data = manager.dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-    
+    # Use a pool of workers to process problems in parallel
     with Pool(processes=os.cpu_count()) as pool:
-        args = [(problem, shared_data) for problem in problems]
-        processed_problems = list(tqdm(pool.imap(ssdp_worker, args), total=len(problems), desc="SSDP Search"))
+        with open(data_fpath, "r") as f:
+            # Create a generator for problems to save memory
+            problem_generator = (json.loads(line) for line in f)
+            
+            # Prepare arguments for the worker
+            worker_args = (prepare_problem(instance, shared_data) for instance in problem_generator)
+
+            try:
+                # Use imap to process problems as they are generated
+                for result, result_shared_data in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
+                    processed_problems.append(result)
+                    # Update shared data with the results from the worker
+                    shared_data["prompt_tokens"] += result_shared_data["prompt_tokens"]
+                    shared_data["completion_tokens"] += result_shared_data["completion_tokens"]
+                    shared_data["total_tokens"] += result_shared_data["total_tokens"]
+            except Exception as e:
+                print(f"An error occurred during multiprocessing: {e}")
+            finally:
+                pool.close()
+                pool.join()
+
 
     print(f"Saving results to {output_fpath}")
     with open(output_fpath, "wb") as f:
         pickle.dump(processed_problems, f)
-    
+
     # Print summary statistics
-    print("\n=== SSDP Search Complete ===")
-    total_nodes = sum(len(p.all_nodes) for p in processed_problems)
-    total_expansions = sum(p.total_expansions for p in processed_problems)
-    total_merges = sum(p.total_merges for p in processed_problems)
-    total_prunes = sum(p.total_prunes for p in processed_problems)
-    total_runtime = sum(p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds'))
-    
-    print(f"Total nodes created: {total_nodes}")
-    print(f"Total expansions: {total_expansions}")
-    print(f"Total merges: {total_merges}")
-    print(f"Total prunes: {total_prunes}")
-    if len(processed_problems) > 0:
-        print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
-    print(f"\n--- Metrics ---")
-    print(f"Total runtime: {total_runtime:.2f} seconds")
-    if len(processed_problems) > 0:
-        valid_runtimes = [p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds')]
-        if valid_runtimes:
-            print(f"Average runtime per problem: {sum(valid_runtimes) / len(valid_runtimes):.2f} seconds")
-    print(f"Total prompt tokens: {shared_data['prompt_tokens']}")
-    print(f"Total completion tokens: {shared_data['completion_tokens']}")
-    print(f"Total tokens: {shared_data['total_tokens']}")
+    if processed_problems:
+        print("\n=== SSDP Search Complete ===")
+        total_nodes = sum(len(p.all_nodes) for p in processed_problems)
+        total_expansions = sum(p.total_expansions for p in processed_problems)
+        total_merges = sum(p.total_merges for p in processed_problems)
+        total_prunes = sum(p.total_prunes for p in processed_problems)
+        total_runtime = sum(p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds'))
+
+        print(f"Total nodes created: {total_nodes}")
+        print(f"Total expansions: {total_expansions}")
+        print(f"Total merges: {total_merges}")
+        print(f"Total prunes: {total_prunes}")
+        if len(processed_problems) > 0:
+            print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
+        print(f"\n--- Metrics ---")
+        print(f"Total runtime: {total_runtime:.2f} seconds")
+        if len(processed_problems) > 0:
+            valid_runtimes = [p.runtime_seconds for p in processed_problems if hasattr(p, 'runtime_seconds')]
+            if valid_runtimes:
+                print(f"Average runtime per problem: {sum(valid_runtimes) / len(valid_runtimes):.2f} seconds")
+        print(f"Total prompt tokens: {shared_data['prompt_tokens']}")
+        print(f"Total completion tokens: {shared_data['completion_tokens']}")
+        print(f"Total tokens: {shared_data['total_tokens']}")
+
 
 if __name__ == "__main__":
     main()
