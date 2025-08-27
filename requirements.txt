@@ -1,3 +1,4 @@
 vllm==0.10.0           # high-throughput LLM inference engine :contentReference[oaicite:1]{index=1}
 scikit-learn>=1.2.0
 accelerate>=1.9.0
+jsonlines>=4.0.0
