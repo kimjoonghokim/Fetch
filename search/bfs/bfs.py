@@ -92,7 +92,7 @@ if __name__ == '__main__':
             child = state.tree.add_node(next_step, next_value, state, i + 1, assert_end(next_step))
             fix_value(child)
 
-        pickle.dump(problems, open(output_fpath, "wb"))
+        # pickle.dump(problems, open(output_fpath, "wb")) # Dump the entire state of all the questions at the end of the iteration, comment out for faster performance
         
         iteration_time = time.time() - iteration_start_time
         print(f"Iteration {i} took {iteration_time:.2f} seconds.")
