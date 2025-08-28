@@ -9,6 +9,7 @@ import pickle
 import numpy as np
 import jsonlines
 import time
+import multiprocessing
 
 
 LIMIT=50
@@ -41,6 +42,8 @@ if __name__ == '__main__':
     program_start_time = time.time()
     total_tokens_used = 0
     
+    pool = multiprocessing.Pool(80)
+
     if CONTINUE:    
         problems = pickle.load(open(output_fpath, "rb"))
         start = max([problem.return_timestep() for problem in problems])
@@ -80,7 +83,7 @@ if __name__ == '__main__':
         if len(questions) == 0:
             break
 
-        next_steps, next_values, usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages = call(pool, questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
         
         iteration_tokens = sum(usage.get('total_tokens', 0) for usage in usages)
         total_tokens_used += iteration_tokens
@@ -113,7 +116,7 @@ if __name__ == '__main__':
         print(f"iteration final")
         print(f"finished {finished} / {len(problems)}")
 
-        next_steps, next_values, usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages = call(pool, questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
         
         iteration_tokens = sum(usage.get('total_tokens', 0) for usage in usages)
         total_tokens_used += iteration_tokens
@@ -125,9 +128,13 @@ if __name__ == '__main__':
         pickle.dump(problems, open(output_fpath, "wb"))
         print(f"Final iteration tokens: {iteration_tokens}")
 
+    pool.close()
+    pool.join()
+
     program_end_time = time.time()
     total_runtime = program_end_time - program_start_time
     print(f"\nTotal program runtime: {total_runtime:.2f} seconds.")
     print(f"Total tokens used: {total_tokens_used}")
+
 
 

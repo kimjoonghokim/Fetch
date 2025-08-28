@@ -86,11 +86,10 @@ class Worker(object):
 
         return next_step, value, usage
 
-def call(questions, paths, temperatures, stops):
+def call(pool, questions, paths, temperatures, stops):
     policy_args = PolicyArgument()
     value_args = ValueArgument()
     worker = Worker(policy_args, value_args)
-    pool = multiprocessing.Pool(80)
     model_outputs = list(tqdm(pool.imap(worker.encode_wrapper, [(a, b, c, d) for a, b, c, d in zip(questions, paths, temperatures, stops)], 4), total=len(questions)))
     next_steps, values, usages = zip(*model_outputs)
     return next_steps, values, usages
