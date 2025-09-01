@@ -42,6 +42,7 @@ def extract_pred_answer(text):
     """Extracts the predicted answer from the model's output."""
     if text is None:
         return "[INVALID]"
+    text = text.replace("<|end_of_text|>", "").strip()
     PATTERN = re.compile(r"The answer is (.*)")
     match = PATTERN.search(text)
     if match:
@@ -89,9 +90,6 @@ def main(results_file_path):
         if leaf_nodes:
             best_node = max(leaf_nodes, key=lambda x: x.value)
             predicted_answer = extract_pred_answer(best_node.content)
-            print(f"Problem: {problem.question}")
-            print(f"  - Gold Answer: {gold_answer}")
-            print(f"  - Predicted Answer: {predicted_answer}")
             if are_answers_equal(predicted_answer, gold_answer):
                 correct_solutions += 1
         else:
