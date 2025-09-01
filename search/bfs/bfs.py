@@ -8,7 +8,7 @@ import json
 import pickle
 import numpy as np
 import jsonlines
-
+import time
 
 LIMIT=50
 BUDGET=10
@@ -39,7 +39,9 @@ policy_fpath = "path/to/llama/ckpt" # path to the policy model
 if __name__ == '__main__':
     
     if CONTINUE:    
-        problems = pickle.load(open(output_fpath, "rb"))
+        with open(output_fpath, "rb") as f:
+            data = pickle.load(f)
+            problems = data["problems"]
         start = max([problem.return_timestep() for problem in problems])
     else:
         dataset = []
@@ -55,6 +57,8 @@ if __name__ == '__main__':
             problem.init_root_node(0)
             problems.append(problem)
         start = 0
+
+    start_time = time.time()
 
     for i in range(start, LIMIT):
         questions = []
@@ -76,35 +80,68 @@ if __name__ == '__main__':
         if len(questions) == 0:
             break
 
-        next_steps, next_values = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        
+        # Aggregate token usage
+        for anchor_state, usage in zip(anchors, usages):
+            tree = anchor_state.tree
+            tree.prompt_tokens += usage.get("prompt_tokens", 0)
+            tree.completion_tokens += usage.get("completion_tokens", 0)
+            tree.total_tokens += usage.get("total_tokens", 0)
+
         for state, next_step, next_value in zip(anchors, next_steps, next_values):
             child = state.tree.add_node(next_step, next_value, state, i + 1, assert_end(next_step))
             fix_value(child)
 
-        pickle.dump(problems, open(output_fpath, "wb"))
-            
-# if unfinish, select 1 node and extend to the end
-questions = []
-anchors = []
-paths = []
-finished = 0
-for problem in problems:
-    state = problem.select_best_node()
-    if state is not None:
-        anchors += [state]
-        questions += [problem.question]
-        paths += [state.print_path()]
-    else:
-        finished += 1
+    # if unfinish, select 1 node and extend to the end
+    questions = []
+    anchors = []
+    paths = []
+    finished = 0
+    for problem in problems:
+        state = problem.select_best_node()
+        if state is not None:
+            anchors += [state]
+            questions += [problem.question]
+            paths += [state.print_path()]
+        else:
+            finished += 1
 
-if len(questions) != 0:
-    print(f"iteration final")
-    print(f"finished {finished} / {len(problems)}")
+    if len(questions) != 0:
+        print(f"iteration final")
+        print(f"finished {finished} / {len(problems)}")
 
-    next_steps, next_values = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
-    for state, next_step, next_value in zip(anchors, next_steps, next_values):
-        child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
-        fix_value(child)
+        next_steps, next_values, usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+        
+        # Aggregate token usage
+        for anchor_state, usage in zip(anchors, usages):
+            tree = anchor_state.tree
+            tree.prompt_tokens += usage.get("prompt_tokens", 0)
+            tree.completion_tokens += usage.get("completion_tokens", 0)
+            tree.total_tokens += usage.get("total_tokens", 0)
 
-    pickle.dump(problems, open(output_fpath, "wb"))
+        for state, next_step, next_value in zip(anchors, next_steps, next_values):
+            child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
+            fix_value(child)
 
+    total_runtime = time.time() - start_time
+    
+    # Final save
+    final_data = {
+        'problems': problems,
+        'metrics': {
+            'total_runtime': total_runtime,
+            'total_prompt_tokens': sum(p.prompt_tokens for p in problems),
+            'total_completion_tokens': sum(p.completion_tokens for p in problems),
+            'total_tokens': sum(p.total_tokens for p in problems)
+        }
+    }
+    
+    with open(output_fpath, "wb") as f:
+        pickle.dump(final_data, f)
+
+    print("\n=== BFS Search Complete ===")
+    print(f"Total runtime: {total_runtime:.2f} seconds")
+    print(f"Total tokens: {final_data['metrics']['total_tokens']}")
+    print(f"  (Prompt: {final_data['metrics']['total_prompt_tokens']}, Completion: {final_data['metrics']['total_completion_tokens']})")
+    print(f"Results saved to {output_fpath}")

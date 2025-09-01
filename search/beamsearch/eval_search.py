@@ -1,4 +1,6 @@
 import pickle
+import re
+from transformers import AutoTokenizer
 
 data_fpath = "path/to/output"
 policy_fpath = "path/to/policy"
@@ -13,32 +15,23 @@ class Node:
         self.tree = tree
         self.is_leaf = is_leaf
 
-class VirtualNode:
-    def __init__(self, nodes, parent=None):
-        self.nodes = sorted(nodes, key=lambda x: x.value, reverse=True)
-        self.tree = self.nodes[0].tree
-        self.value = self.nodes[0].value
-        self.visited = False
-        self.children = []
-        self.cache = []
-        self.parent = parent
-
 class Tree:
-    def __init__(self, question, options, answer):
+    def __init__(self, question, answer):
         self.question = question
-        self.options = options
-        self.answer = answer # provided, but will not used when searching
+        self.answer = answer
         self.all_nodes = []
         self.root = Node(None, 0, None, 0, self)
         self.all_nodes.append(self.root)
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.runtime_seconds = 0.0
 
 with open(data_fpath, "rb") as f:
     problems = pickle.load(f)
 
-import re
-
 def extract_gold_answer(completion):
-    ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
+    ANS_RE = re.compile(r"#### (-?[0-9\.\,]+)")
     match = ANS_RE.search(completion)
     if match:
         match_str = match.group(1).strip()
@@ -65,28 +58,15 @@ def eq(a, b):
     except:
         return False
 
-from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
-
-def compute_cost(problem):
-    return sum([len(tokenizer.tokenize(node.content)) for node in problem.all_nodes if node.content])
-
-def select_node(problem):
-    cnt = 0
-    if hasattr(problem, "virtual_nodes"):
-        for virtual_node in problem.virtual_nodes:
-            if len(virtual_node.children) > 0:
-                cnt += 1
-    else:
-        for node in problem.all_nodes:
-            if len(node.children) > 0:
-                cnt += 1
-    return cnt
 
 corr, total = 0, 0
 not_finished = 0
-tokens = 0
-select_cnt = 0
+total_prompt_tokens = 0
+total_completion_tokens = 0
+total_tokens = 0
+total_runtime = 0.0
+
 for problem in problems:
     ref = extract_gold_answer(problem.answer) if "####" in problem.answer else problem.answer
     leaf_nodes = [node for node in problem.all_nodes if node.is_leaf]
@@ -98,12 +78,18 @@ for problem in problems:
     else:
         not_finished += 1
     total += 1
-    tokens += compute_cost(problem)
-    select_cnt += select_node(problem)
+    total_prompt_tokens += problem.prompt_tokens
+    total_completion_tokens += problem.completion_tokens
+    total_tokens += problem.total_tokens
+    total_runtime += problem.runtime_seconds
 
-
-print(f"{corr}/{total}={corr/total}")
-print(f"{not_finished}/{total}={not_finished/total}")
-print(f"{tokens/total}")
-print(f"{select_cnt/total}")
-
+print(f"Accuracy: {corr}/{total}={corr/total}")
+print(f"Not Finished: {not_finished}/{total}={not_finished/total}")
+print(f"\n--- Runtime ---")
+print(f"Total runtime: {total_runtime:.2f} seconds")
+if total > 0:
+    print(f"Average runtime per problem: {total_runtime / total:.2f} seconds")
+print(f"\n--- Token Usage ---")
+print(f"Total prompt tokens: {total_prompt_tokens}")
+print(f"Total completion tokens: {total_completion_tokens}")
+print(f"Total tokens: {total_tokens}")
