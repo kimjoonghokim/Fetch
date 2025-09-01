@@ -17,7 +17,7 @@ policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the policy model
 
 # task dependent
 def assert_end(text):
-    return True if "The answer is" in text and text.endswith(tokenizer.eos_token) else False
+    return True if "The answer is" in text else False
 
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
