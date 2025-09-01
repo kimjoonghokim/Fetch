@@ -14,6 +14,9 @@ echo "EMBEDDING_MODEL_PATH=$EMBEDDING_MODEL_PATH"
 
 export NCCL_P2P_DISABLE=1 #disabling this helps with our NCCL issues on vLLM, feel free to comment this out if not necessary
 
+# Specify which GPUs to use for the policy server (GPU 0 and 1)
+export CUDA_VISIBLE_DEVICES=0,1
+
 # Run the vLLM API server using the policy model path from .env
 python3 -m vllm.entrypoints.openai.api_server \
     --model "$POLICY_MODEL_PATH" \
