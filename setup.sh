@@ -13,3 +13,12 @@ echo "VERIFIER_MODEL_PATH=$VERIFIER_MODEL_PATH"
 echo "EMBEDDING_MODEL_PATH=$EMBEDDING_MODEL_PATH"
 
 export NCCL_P2P_DISABLE=1 #disabling this helps with our NCCL issues on vLLM, feel free to comment this out if not necessary
+
+# Run the vLLM API server using the policy model path from .env
+python3 -m vllm.entrypoints.openai.api_server \
+    --model "$POLICY_MODEL_PATH" \
+    --port 8000 \
+    --dtype float16 \
+    --tensor-parallel-size 2 \
+    --swap-space 8 \
+    --max-model-len 4096
