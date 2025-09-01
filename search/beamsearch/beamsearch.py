@@ -148,4 +148,26 @@ pool = multiprocessing.Pool(80)
 problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))    
 pool.close()
 
-pickle.dump(problems, open(output_fpath, "wb"))
+total_runtime = sum([p.runtime_seconds for p in problems])
+total_prompt_tokens = sum([p.prompt_tokens for p in problems])
+total_completion_tokens = sum([p.completion_tokens for p in problems])
+total_tokens = sum([p.total_tokens for p in problems])
+
+final_data = {
+    'problems': problems,
+    'metrics': {
+        'total_runtime': total_runtime,
+        'total_prompt_tokens': total_prompt_tokens,
+        'total_completion_tokens': total_completion_tokens,
+        'total_tokens': total_tokens
+    }
+}
+
+with open(output_fpath, "wb") as f:
+    pickle.dump(final_data, f)
+
+print("\n=== Beam Search Complete ===")
+print(f"Total runtime: {total_runtime:.2f} seconds")
+print(f"Total tokens: {total_tokens}")
+print(f"  (Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens})")
+print(f"Results saved to {output_fpath}")
