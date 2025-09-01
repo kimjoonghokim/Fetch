@@ -144,11 +144,14 @@ def worker(tree):
     tree.runtime_seconds = time.time() - start_time
     return tree
 
+start_time = time.time()
+
 pool = multiprocessing.Pool(80)
 problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))    
 pool.close()
 
-total_runtime = sum([p.runtime_seconds for p in problems])
+total_runtime = time.time() - start_time
+
 total_prompt_tokens = sum([p.prompt_tokens for p in problems])
 total_completion_tokens = sum([p.completion_tokens for p in problems])
 total_tokens = sum([p.total_tokens for p in problems])

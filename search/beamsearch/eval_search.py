@@ -1,6 +1,7 @@
 import pickle
 import re
 import sys
+import numpy as np
 
 class Node:
     def __init__(self, content, value, parent, timestep, tree, is_leaf=False):
@@ -78,6 +79,7 @@ def main(results_file_path):
 
     correct_solutions = 0
     unfinished_problems = 0
+    runtimes = [p.runtime_seconds for p in problems]
 
     for problem in problems:
         gold_answer = extract_gold_answer(problem.answer)
@@ -111,11 +113,17 @@ def main(results_file_path):
 
     # Runtime Metrics
     total_runtime = metrics.get('total_runtime', 0)
-    avg_runtime = total_runtime / total_problems if total_problems > 0 else 0
+    avg_runtime = np.mean(runtimes) if runtimes else 0
+    min_runtime = min(runtimes) if runtimes else 0
+    max_runtime = max(runtimes) if runtimes else 0
+    median_runtime = np.median(runtimes) if runtimes else 0
     
     print("--- Runtime ---")
     print(f"Total Runtime:       {total_runtime:.2f} seconds")
     print(f"Average per Problem: {avg_runtime:.2f} seconds")
+    print(f"Min per Problem:     {min_runtime:.2f} seconds")
+    print(f"Max per Problem:     {max_runtime:.2f} seconds")
+    print(f"Median per Problem:  {median_runtime:.2f} seconds")
     print("-" * 30)
 
     # Token Usage Metrics
