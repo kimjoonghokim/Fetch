@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -8,7 +9,13 @@ from transformers import AutoTokenizer, AutoModel
 from sklearn.cluster import AgglomerativeClustering
 import uvicorn
 
-model_fpath = "xmu-nlp/simcse-large-gsm8k"
+load_dotenv(dotenv_path='../server_config.env')
+
+model_fpath = os.getenv("EMBEDDING_MODEL_PATH")
+
+if not model_fpath:
+    raise ValueError("EMBEDDING_MODEL_PATH environment variable not set")
+
 tokenizer = AutoTokenizer.from_pretrained(model_fpath)
 model = AutoModel.from_pretrained(model_fpath).cuda()
 max_seq_length = 256
