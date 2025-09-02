@@ -17,11 +17,17 @@ echo "EMBEDDING_MODEL_PATH=$EMBEDDING_MODEL_PATH"
 
 export NCCL_P2P_DISABLE=1 #disabling this helps with our NCCL issues on vLLM, feel free to comment this out if not necessary
 
-# Run verifier model on GPU 2
-bash ./verifier/run.sh ./verifier 2
+CURRENT_DIR=$(pwd) # Save current directory
 
-# Run the embedding model on GPU 3
-bash ./cluster/run_app.sh ./cluster 3
+# Verifier model setup:
+cd ./verifier || exit 1 # Change into the verifier directory
+bash run.sh ./ 2 # Run verifier model on GPU 2
+cd "$CURRENT_DIR" # Go back to original directory
+
+# Embedding model setup:
+cd ./cluster || exit 1 # Change into the cluster directory
+bash run_app.sh ./ 3 # Run cluster model on GPU 3
+cd "$CURRENT_DIR" # Go back to original directory
 
 # Specify which GPUs to use for the policy server (GPU 0 and 1)
 export CUDA_VISIBLE_DEVICES=0,1
