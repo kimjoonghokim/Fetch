@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -6,7 +7,12 @@ from typing import List
 import torch
 from transformers import AutoConfig, AutoTokenizer, LlamaForTokenClassification
 
-model_name_or_path = "xmu-nlp/Llama-3-8b-gsm8k-value-A"
+load_dotenv(dotenv_path='../../server_config.env')
+
+model_name_or_path = os.getenv("VERIFIER_MODEL_PATH")
+
+if not model_name_or_path:
+    raise ValueError("VERIFIER_MODEL_PATH environment variable not set")
 
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True)
 print("Tokenizer loaded successfully.")
