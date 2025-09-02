@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# This script should install all the requirements as well as start up the policy, verifier, and embedding server
+# The following steps are assuming you have 4 GPUs, 2 for the policy model and 1 for the embedding and 1 for the verifier model
+
 pip install -r requirements.txt
 
 # Load environment variables from server_config.env
@@ -13,6 +16,12 @@ echo "VERIFIER_MODEL_PATH=$VERIFIER_MODEL_PATH"
 echo "EMBEDDING_MODEL_PATH=$EMBEDDING_MODEL_PATH"
 
 export NCCL_P2P_DISABLE=1 #disabling this helps with our NCCL issues on vLLM, feel free to comment this out if not necessary
+
+# Run verifier model on GPU 2
+bash ./verifier/run.sh ./verifier 2
+
+# Run the embedding model on GPU 3
+bash ./cluster/run_app.sh ./cluster 3
 
 # Specify which GPUs to use for the policy server (GPU 0 and 1)
 export CUDA_VISIBLE_DEVICES=0,1
