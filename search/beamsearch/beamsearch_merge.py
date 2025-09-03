@@ -5,6 +5,7 @@ import numpy as np
 import jsonlines
 import requests
 from tqdm import tqdm
+from dotenv import load_dotenv
 
 LIMIT=50
 BUDGET=5
@@ -13,7 +14,9 @@ TEMPERATURE=0.8
 DISTANCE=0.15
 data_fpath = "gsm8k/test.jsonl" # path to the test set
 output_fpath = f"test_gsm8k_beamsearch_merge_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
-policy_fpath = "path/to/llama/ckpt" # path to the policy model
+load_dotenv(dotenv_path='../../server_config.env')
+policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
+
 
 # task dependent
 def assert_end(text):

@@ -9,6 +9,7 @@ import pickle
 import numpy as np
 import jsonlines
 import time
+from dotenv import load_dotenv
 
 LIMIT=50
 BUDGET=10
@@ -34,7 +35,9 @@ STEP_STOP_TOKENS = ["\n"]
 CONTINUE = False
 data_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the test set
 output_fpath = f"test_gsm8k_bfs_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
-policy_fpath = "path/to/llama/ckpt" # path to the policy model
+load_dotenv(dotenv_path='../../server_config.env')
+policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
+
 
 if __name__ == '__main__':
     
