@@ -14,7 +14,9 @@ BEAM=5
 TEMPERATURE=0.8
 load_dotenv(dotenv_path='../experiments_config.env')
 data_fpath = os.getenv("PATH_TO_DATASET") # path to the test set
-output_fpath = f"test_gsm8k_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
+dataset_name = data_fpath.split('/')[-2]
+dataset_type = data_fpath.split('/')[-1].split('.')[0]
+output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl"
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
