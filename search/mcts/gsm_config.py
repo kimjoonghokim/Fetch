@@ -112,7 +112,8 @@ class GSMConfig:
         temperature = 0 if greedy else TEMPERATURE
         pload ={"prompt": query, "model": self.policy_args.model_name, "temperature": temperature,
                 "max_tokens": self.policy_args.max_tokens, "stop": STEP_STOP_TOKENS,}
-        return self.call_policy(pload).strip()
+        content, usage = self.call_policy(pload)
+        return content.strip(), usage
 
     def get_full_traj(self, question, steps=[], greedy=False):
         answer = self.concat_steps(steps)
@@ -120,7 +121,8 @@ class GSMConfig:
         temperature = 0 if greedy else TEMPERATURE
         pload ={"prompt": query, "model": self.policy_args.model_name, "temperature": temperature,
                 "max_tokens": self.policy_args.max_tokens, "stop": SEQ_STOP_TOKENS}
-        return self.call_policy(pload).strip()
+        content, usage = self.call_policy(pload)
+        return content.strip(), usage
 
     def get_value(self, question, steps=[]):
         answer = self.concat_steps(steps)

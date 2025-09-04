@@ -131,6 +131,7 @@ class MCTSTree:
             curr_node = curr_node.parent
 
     def run_mcts(self):
+        start_time = time.time()
         timestep, n_terminals = 0, 0
         while (timestep < self.config.min_search_time or n_terminals < self.config.min_terminals) and timestep < self.config.max_search_time:
             timestep += 1
@@ -157,3 +158,4 @@ class MCTSTree:
             else: # is terminal
                 self.mcts_backpropagate(selected_node, selected_node.rewards[0]) # directly backprop
                 n_terminals += 0.1 # trick, may remove in future
+        self.runtime_seconds = time.time() - start_time
