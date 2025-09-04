@@ -6,14 +6,24 @@ import jsonlines
 import requests
 from tqdm import tqdm
 import time
+from dotenv import load_dotenv
 
 LIMIT=50
 BUDGET=5
 BEAM=5
 TEMPERATURE=0.8
-data_fpath = "../../dataset/toy.jsonl" # path to the test set
-output_fpath = f"test_gsm8k_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
-policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the policy model
+load_dotenv(dotenv_path='../experiments_config.env')
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None # path to the test set
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
+output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl"
+load_dotenv(dotenv_path='../../server_config.env')
+policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
 # task dependent
 def assert_end(text):

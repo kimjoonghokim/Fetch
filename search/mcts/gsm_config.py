@@ -14,7 +14,8 @@ SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 from transformers import AutoTokenizer
-MODEL_PATH = "path/to/policy/ckpt"
+load_dotenv(dotenv_path='../../server_config.env')
+MODEL_PATH = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
 class PolicyArgument:
