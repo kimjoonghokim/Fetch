@@ -1,68 +1,44 @@
 import pickle
 import re
-from mcts_tree import *
-from mcts_tree_merge import *
-# from grader import grade_answer
-from tqdm import tqdm
-import random
+import sys
+import numpy as np
+from mcts_tree import MCTSTree, MCTSNode
 
-data_fpath = "path/to/pred"
-MODEL_PATH = "path/to/policy"
-
-with open(data_fpath, "rb") as f:
-    problems = pickle.load(f)
-
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-
-INVALID_ANS="[invalid]"
 def extract_gold_answer(completion):
+    """Extracts the gold answer from a string."""
     ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
     match = ANS_RE.search(completion)
     if match:
-        match_str = match.group(1).strip()
-        match_str = match_str.replace(",", "")
+        match_str = match.group(1).strip().replace(",", "")
         try:
             float(match_str)
-        except BaseException:
-            return INVALID_ANS
-        return match_str
-    else:
-        return INVALID_ANS
+            return match_str
+        except ValueError:
+            return "[INVALID]"
+    return "[INVALID]"
 
-def extract_pred_answer(completion):
-    ANS_RE = re.compile(r"The answer is (\-?[0-9\.\,]+)")
-    match = ANS_RE.search(completion.strip().split("\n")[-1])
+def extract_pred_answer(text):
+    """Extracts the predicted answer from the model's output."""
+    if text is None:
+        return "[INVALID]"
+    text = text.replace("<|end_of_text|>", "").strip()
+    PATTERN = re.compile(r"The answer is (.*)")
+    match = PATTERN.search(text)
     if match:
-        match_str = match.group(1).strip()
-        match_str = match_str.replace(",", "")
-        try:
-            float(match_str)
-        except BaseException:
-            return INVALID_ANS
-        return match_str
-    else:
-        return INVALID_ANS
+        # Handle potential dollar signs and commas in the number
+        return match.group(1).replace(",", "").replace("$", "").strip()
+    # Fallback for numbers at the end of the string
+    numbers = re.findall(r"([+-]?\d*\.?\d+)", text)
+    if numbers:
+        return numbers[-1]
+    return "[INVALID]"
 
-def read_step_num(tree):
-    return len(tree.all_nodes) - 1 # -1 root
-
-def read_token_num(tree):
-    return sum([len(tokenizer.tokenize(node.content)) for node in tree.all_nodes if node.content])
-
-def read_rollout_token_num(tree):
-    rollout_token_num = 0
-    for node in tree.all_nodes:
-        for rollout in node.rollouts:
-            if rollout and rollout["text"]:
-                rollout_token_num += len(tokenizer.tokenize(rollout["text"]))
-    return rollout_token_num
-
-def read_skip_num(tree):
-    return len(set([node.timestep for node in tree.all_nodes if node and node.parent and node.timestep - node.parent.timestep > 1]))
-
-def return_max_depth(tree):
-    return max([node.get_depth() for node in tree.all_nodes])
+def are_answers_equal(pred, gold):
+    """Compares two answers for equality, handling floating point comparisons."""
+    try:
+        return abs(float(pred) - float(gold)) < 1e-6
+    except (ValueError, TypeError):
+        return False
 
 def return_best_path(tree):
     leaf_nodes = [node for node in tree.all_nodes if node.is_leaf]
@@ -77,78 +53,86 @@ def return_best_path(tree):
         except:
             return None
 
-def return_greedy_path(tree):
-    curr_node = tree.root
-    while True:
-        if curr_node.is_leaf:
-            if not hasattr(curr_node, "sub_nodes"):
-                return "\n".join(curr_node.return_path())
-            else:
-                return "\n".join(curr_node.sub_nodes[0].return_path())
-        elif curr_node.actions:
-            curr_node = max(curr_node.actions, key = lambda x: x.q())
-        else:
-            break
-    if not hasattr(curr_node, "sub_nodes"):
-        return max(curr_node.rollouts, key = lambda x: x["value"])["text"]
-    else:
-        return max(curr_node.sub_nodes[0].rollouts, key = lambda x: x["value"])["text"]
-
-def select_node(problem):
-    cnt = 0
-    root = problem.root
-    def get_actions(node):
-        nodes = [node]
-        for child in node.actions:
-            nodes += get_actions(child)
-        return nodes
-    all_nodes = get_actions(root)
-    for node in all_nodes:
-        if len(node.actions) > 0:
-            cnt += 1
-    return cnt
-
-def eq(a, b):
+def main(results_file_path):
+    """Main function to load results and print evaluation metrics."""
+    print(f"--- Loading results from: {results_file_path} ---")
     try:
-        return abs(float(a) - float(b)) < 1e-6
-    except:
-        return False
+        with open(results_file_path, "rb") as f:
+            data = pickle.load(f)
+            problems = data['problems']
+            metrics = data['metrics']
+    except (IOError, pickle.UnpicklingError, KeyError) as e:
+        print(f"Error: Could not load or parse the results file. Make sure it's a valid pickle file in the new format. Details: {e}")
+        return
 
-correct = 0
-total = 0
-finished = 0
-total_steps = 0
-total_rollout_token_num = 0
-total_token_nums = 0
-skip_num = 0
-depth = 0
-select_cnt = 0
-for problem in tqdm(problems):
-    prediction = return_best_path(problem)
-    if prediction is not None:
-        finished += 1
-        hyp = extract_pred_answer(prediction)
-        ref = extract_gold_answer(problem.answer)
-        if ref == "[invalid]":
-            ref = problem.answer
-        if eq(hyp, ref):
-            correct += 1
-    total += 1
-    total_steps += read_step_num(problem)
-    total_token_nums += read_token_num(problem)
-    total_rollout_token_num += read_rollout_token_num(problem)
-    skip_num += read_skip_num(problem)
-    depth += return_max_depth(problem)
-    select_cnt += select_node(problem)
+    total_problems = len(problems)
+    if total_problems == 0:
+        print("No problems found in the results file.")
+        return
 
-print("Accuracy:", correct / total)
-print("Finished:", finished / total, "Total:", total)
-print("Avg Steps:", total_steps / total)
-print("Avg Token Nums:", total_token_nums / total)
-print("Avg Rollout Token Num:", total_rollout_token_num / total)
-print("Sum of Token Nums:", (total_token_nums + total_rollout_token_num) / total)
-print("Avg Skip Nums:", skip_num / total)
-print("Avg Depth:", depth / total)
-print("Select Node:", select_cnt / total)
+    correct_solutions = 0
+    unfinished_problems = 0
+    runtimes = [p.runtime_seconds for p in problems if hasattr(p, 'runtime_seconds')]
 
+    for problem in problems:
+        gold_answer = extract_gold_answer(problem.answer)
+        
+        prediction = return_best_path(problem)
+        
+        if prediction is not None:
+            predicted_answer = extract_pred_answer(prediction)
+            if are_answers_equal(predicted_answer, gold_answer):
+                correct_solutions += 1
+        else:
+            unfinished_problems += 1
 
+    # --- Print Human-Readable Results ---
+    print("\n" + "="*30)
+    print("    MCTS Search Evaluation     ")
+    print("="*30 + "\n")
+
+    # Accuracy Metrics
+    accuracy = (correct_solutions / total_problems) * 100 if total_problems > 0 else 0
+    completion_rate = ((total_problems - unfinished_problems) / total_problems) * 100 if total_problems > 0 else 0
+    
+    print("--- Performance ---")
+    print(f"Total Problems:      {total_problems}")
+    print(f"Correct Solutions:   {correct_solutions}")
+    print(f"Unfinished Problems: {unfinished_problems}")
+    print(f"Accuracy:            {accuracy:.2f}%")
+    print(f"Completion Rate:     {completion_rate:.2f}%")
+    print("-" * 30)
+
+    # Runtime Metrics
+    total_runtime = metrics.get('total_runtime', 0)
+    avg_runtime = np.mean(runtimes) if runtimes else 0
+    min_runtime = min(runtimes) if runtimes else 0
+    max_runtime = max(runtimes) if runtimes else 0
+    median_runtime = np.median(runtimes) if runtimes else 0
+    
+    print("--- Runtime ---")
+    print(f"Total Runtime:       {total_runtime:.2f} seconds")
+    print(f"Average per Problem: {avg_runtime:.2f} seconds")
+    print(f"Min per Problem:     {min_runtime:.2f} seconds")
+    print(f"Max per Problem:     {max_runtime:.2f} seconds")
+    print(f"Median per Problem:  {median_runtime:.2f} seconds")
+    print("-" * 30)
+
+    # Token Usage Metrics
+    total_tokens = metrics.get('total_tokens', 0)
+    prompt_tokens = metrics.get('total_prompt_tokens', 0)
+    completion_tokens = metrics.get('total_completion_tokens', 0)
+    avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
+
+    print("--- Token Usage ---")
+    print(f"Total Tokens Used:   {total_tokens}")
+    print(f"  - Prompt Tokens:   {prompt_tokens}")
+    print(f"  - Completion Tokens: {completion_tokens}")
+    print(f"Average per Problem: {avg_tokens:.2f} tokens")
+    print("="*30)
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print("Usage: python eval_search.py <path_to_results.pkl>")
+        sys.exit(1)
+    main(sys.argv[1])
