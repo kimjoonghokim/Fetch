@@ -80,11 +80,14 @@ class GSMConfig:
     def call_policy(self, pload):
         try:
             response = requests.post(self.policy_url, json=pload)
-            content = json.loads(response.content)["choices"][0]["text"]
+            response_json = response.json()
+            content = response_json["choices"][0]["text"]
+            usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         except Exception as e:
             print("Policy Server Error", e, response.content) # mostly because out of length
             content = ""
-        return content 
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return content, usage 
         
     def call_value(self, pload):
         try:
