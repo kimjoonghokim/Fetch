@@ -51,6 +51,9 @@ class MCTSTree:
         self.all_nodes = []
         self.config = config
         self.root = self.init_root_node() # wait init
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
 
     def init_root_node(self):
         root = MCTSNode(None, None, 0, False, p=1)
@@ -106,6 +109,9 @@ class MCTSTree:
         while len(actions) < node_budget:
             action = self.config.get_next_step(self.question, node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, node.return_path(), False)
             actions.append(action)
+            self.prompt_tokens += action[1]['prompt_tokens']
+            self.completion_tokens += action[1]['completion_tokens']
+            self.total_tokens += action[1]['total_tokens']
             new_child_node = MCTSNode(action[0], node, timestep, is_leaf = self.config.is_terminal(action[0]), p = self.config.prior(action[0]) if not to_end else 1)
             self.all_nodes.append(new_child_node)
             node.actions.append(new_child_node)
@@ -121,7 +127,14 @@ class MCTSTree:
         """
         rollouts
         """
-        return [self.config.get_full_traj(self.question, node.return_path())[0] for _ in range(self.config.n_rollouts - len(node.rollouts))]
+        rollouts = []
+        for _ in range(self.config.n_rollouts - len(node.rollouts)):
+            rollout, usage = self.config.get_full_traj(self.question, node.return_path())
+            self.prompt_tokens += usage['prompt_tokens']
+            self.completion_tokens += usage['completion_tokens']
+            self.total_tokens += usage['total_tokens']
+            rollouts.append(rollout)
+        return rollouts
 
     def mcts_backpropagate(self, node, reward):
         curr_node = node
