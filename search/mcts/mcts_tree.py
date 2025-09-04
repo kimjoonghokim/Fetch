@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 
 DEBUG = False
@@ -50,6 +51,9 @@ class MCTSTree:
         self.all_nodes = []
         self.config = config
         self.root = self.init_root_node() # wait init
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
 
     def init_root_node(self):
         root = MCTSNode(None, None, 0, False, p=1)
@@ -105,7 +109,10 @@ class MCTSTree:
         while len(actions) < node_budget:
             action = self.config.get_next_step(self.question, node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, node.return_path(), False)
             actions.append(action)
-            new_child_node = MCTSNode(action, node, timestep, is_leaf = self.config.is_terminal(action), p = self.config.prior(action) if not to_end else 1)
+            self.prompt_tokens += action[1]['prompt_tokens']
+            self.completion_tokens += action[1]['completion_tokens']
+            self.total_tokens += action[1]['total_tokens']
+            new_child_node = MCTSNode(action[0], node, timestep, is_leaf = self.config.is_terminal(action[0]), p = self.config.prior(action[0]) if not to_end else 1)
             self.all_nodes.append(new_child_node)
             node.actions.append(new_child_node)
             if DEBUG:
@@ -120,7 +127,14 @@ class MCTSTree:
         """
         rollouts
         """
-        return [self.config.get_full_traj(self.question, node.return_path()) for _ in range(self.config.n_rollouts - len(node.rollouts))]
+        rollouts = []
+        for _ in range(self.config.n_rollouts - len(node.rollouts)):
+            rollout, usage = self.config.get_full_traj(self.question, node.return_path())
+            self.prompt_tokens += usage['prompt_tokens']
+            self.completion_tokens += usage['completion_tokens']
+            self.total_tokens += usage['total_tokens']
+            rollouts.append(rollout)
+        return rollouts
 
     def mcts_backpropagate(self, node, reward):
         curr_node = node
@@ -131,6 +145,7 @@ class MCTSTree:
             curr_node = curr_node.parent
 
     def run_mcts(self):
+        start_time = time.time()
         timestep, n_terminals = 0, 0
         while (timestep < self.config.min_search_time or n_terminals < self.config.min_terminals) and timestep < self.config.max_search_time:
             timestep += 1
@@ -157,3 +172,4 @@ class MCTSTree:
             else: # is terminal
                 self.mcts_backpropagate(selected_node, selected_node.rewards[0]) # directly backprop
                 n_terminals += 0.1 # trick, may remove in future
+        self.runtime_seconds = time.time() - start_time

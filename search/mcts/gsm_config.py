@@ -8,13 +8,15 @@ import random
 import time
 import copy
 from string import Template
+from dotenv import load_dotenv
+import os
 
 TEMPERATURE = 0.8
 SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 from transformers import AutoTokenizer
-load_dotenv(dotenv_path='../../server_config.env')
+load_dotenv(dotenv_path='../../server_config.env') # path to the policy model
 MODEL_PATH = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
@@ -80,11 +82,14 @@ class GSMConfig:
     def call_policy(self, pload):
         try:
             response = requests.post(self.policy_url, json=pload)
-            content = json.loads(response.content)["choices"][0]["text"]
+            response_json = response.json()
+            content = response_json["choices"][0]["text"]
+            usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         except Exception as e:
             print("Policy Server Error", e, response.content) # mostly because out of length
             content = ""
-        return content 
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return content, usage 
         
     def call_value(self, pload):
         try:
@@ -112,7 +117,8 @@ class GSMConfig:
         temperature = 0 if greedy else TEMPERATURE
         pload ={"prompt": query, "model": self.policy_args.model_name, "temperature": temperature,
                 "max_tokens": self.policy_args.max_tokens, "stop": STEP_STOP_TOKENS,}
-        return self.call_policy(pload).strip()
+        content, usage = self.call_policy(pload)
+        return content.strip(), usage
 
     def get_full_traj(self, question, steps=[], greedy=False):
         answer = self.concat_steps(steps)
@@ -120,7 +126,8 @@ class GSMConfig:
         temperature = 0 if greedy else TEMPERATURE
         pload ={"prompt": query, "model": self.policy_args.model_name, "temperature": temperature,
                 "max_tokens": self.policy_args.max_tokens, "stop": SEQ_STOP_TOKENS}
-        return self.call_policy(pload).strip()
+        content, usage = self.call_policy(pload)
+        return content.strip(), usage
 
     def get_value(self, question, steps=[]):
         answer = self.concat_steps(steps)
