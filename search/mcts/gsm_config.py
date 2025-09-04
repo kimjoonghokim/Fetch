@@ -8,13 +8,15 @@ import random
 import time
 import copy
 from string import Template
+from dotenv import load_dotenv
+import os
 
 TEMPERATURE = 0.8
 SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 from transformers import AutoTokenizer
-load_dotenv(dotenv_path='../../server_config.env')
+load_dotenv(dotenv_path='../../server_config.len') # path to the policy model
 MODEL_PATH = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
