@@ -13,9 +13,14 @@ BUDGET=5
 BEAM=5
 TEMPERATURE=0.8
 load_dotenv(dotenv_path='../experiments_config.env')
-data_fpath = os.getenv("PATH_TO_DATASET") # path to the test set
-dataset_name = data_fpath.split('/')[-2]
-dataset_type = data_fpath.split('/')[-1].split('.')[0]
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None # path to the test set
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
 output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_b{BUDGET}_t{TEMPERATURE}.pkl"
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
