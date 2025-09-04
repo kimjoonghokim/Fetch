@@ -16,7 +16,7 @@ SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 from transformers import AutoTokenizer
-load_dotenv(dotenv_path='../../server_config.len') # path to the policy model
+load_dotenv(dotenv_path='../../server_config.env') # path to the policy model
 MODEL_PATH = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 

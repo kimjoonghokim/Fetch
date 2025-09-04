@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 
 DEBUG = False
@@ -105,7 +106,7 @@ class MCTSTree:
         while len(actions) < node_budget:
             action = self.config.get_next_step(self.question, node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, node.return_path(), False)
             actions.append(action)
-            new_child_node = MCTSNode(action, node, timestep, is_leaf = self.config.is_terminal(action), p = self.config.prior(action) if not to_end else 1)
+            new_child_node = MCTSNode(action[0], node, timestep, is_leaf = self.config.is_terminal(action[0]), p = self.config.prior(action[0]) if not to_end else 1)
             self.all_nodes.append(new_child_node)
             node.actions.append(new_child_node)
             if DEBUG:
@@ -120,7 +121,7 @@ class MCTSTree:
         """
         rollouts
         """
-        return [self.config.get_full_traj(self.question, node.return_path()) for _ in range(self.config.n_rollouts - len(node.rollouts))]
+        return [self.config.get_full_traj(self.question, node.return_path())[0] for _ in range(self.config.n_rollouts - len(node.rollouts))]
 
     def mcts_backpropagate(self, node, reward):
         curr_node = node
