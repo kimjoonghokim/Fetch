@@ -20,9 +20,14 @@ class Tree:
         self.all_nodes = []
         self.root = Node(None, 0, None, 0, self)
         self.all_nodes.append(self.root)
+        # Policy server token tracking
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
         self.runtime_seconds = 0.0
 
 def extract_gold_answer(completion):
@@ -96,9 +101,9 @@ def main(results_file_path):
             unfinished_problems += 1
 
     # --- Print Human-Readable Results ---
-    print("\n" + "="*30)
-    print("    Beam Search Evaluation     ")
-    print("="*30 + "\n")
+    print("\n" + "="*50)
+    print("         Beam Search Evaluation         ")
+    print("="*50 + "\n")
 
     # Accuracy Metrics
     accuracy = (correct_solutions / total_problems) * 100 if total_problems > 0 else 0
@@ -110,7 +115,7 @@ def main(results_file_path):
     print(f"Unfinished Problems: {unfinished_problems}")
     print(f"Accuracy:            {accuracy:.2f}%")
     print(f"Completion Rate:     {completion_rate:.2f}%")
-    print("-" * 30)
+    print("-" * 50)
 
     # Runtime Metrics
     total_runtime = metrics.get('total_runtime', 0)
@@ -125,20 +130,57 @@ def main(results_file_path):
     print(f"Min per Problem:     {min_runtime:.2f} seconds")
     print(f"Max per Problem:     {max_runtime:.2f} seconds")
     print(f"Median per Problem:  {median_runtime:.2f} seconds")
-    print("-" * 30)
+    print("-" * 50)
 
-    # Token Usage Metrics
-    total_tokens = metrics.get('total_tokens', 0)
-    prompt_tokens = metrics.get('total_prompt_tokens', 0)
-    completion_tokens = metrics.get('total_completion_tokens', 0)
-    avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
+    # Token Usage Metrics - Updated for new structure
+    # Check if we have the new metrics structure
+    if 'policy_server' in metrics and 'verifier_server' in metrics:
+        # New structure with separate server tracking
+        policy_metrics = metrics['policy_server']
+        verifier_metrics = metrics['verifier_server']
+        combined_metrics = metrics.get('combined', {})
+        
+        policy_tokens = policy_metrics.get('total_tokens', 0)
+        policy_prompt = policy_metrics.get('total_prompt_tokens', 0)
+        policy_completion = policy_metrics.get('total_completion_tokens', 0)
+        
+        verifier_tokens = verifier_metrics.get('total_tokens', 0)
+        verifier_prompt = verifier_metrics.get('total_prompt_tokens', 0)
+        verifier_completion = verifier_metrics.get('total_completion_tokens', 0)
+        
+        total_tokens = combined_metrics.get('total_tokens', policy_tokens + verifier_tokens)
+        verifier_percentage = combined_metrics.get('verifier_percentage', 0)
+        
+        print("--- Token Usage ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"")
+        print(f"Policy Server:")
+        print(f"  - Total Tokens:    {policy_tokens}")
+        print(f"  - Prompt Tokens:   {policy_prompt}")
+        print(f"  - Completion Tokens: {policy_completion}")
+        print(f"")
+        print(f"Verifier Server:")
+        print(f"  - Total Tokens:    {verifier_tokens}")
+        print(f"  - Prompt Tokens:   {verifier_prompt}")
+        print(f"  - Completion Tokens: {verifier_completion}")
+        print(f"")
+        print(f"Verifier Contribution: {verifier_percentage:.1f}%")
+        print(f"Average per Problem: {total_tokens / total_problems:.2f} tokens")
+        
+    else:
+        # Fallback to old structure for backward compatibility
+        total_tokens = metrics.get('total_tokens', 0)
+        prompt_tokens = metrics.get('total_prompt_tokens', 0)
+        completion_tokens = metrics.get('total_completion_tokens', 0)
+        avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
 
-    print("--- Token Usage ---")
-    print(f"Total Tokens Used:   {total_tokens}")
-    print(f"  - Prompt Tokens:   {prompt_tokens}")
-    print(f"  - Completion Tokens: {completion_tokens}")
-    print(f"Average per Problem: {avg_tokens:.2f} tokens")
-    print("="*30)
+        print("--- Token Usage (Legacy Format) ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"  - Prompt Tokens:   {prompt_tokens}")
+        print(f"  - Completion Tokens: {completion_tokens}")
+        print(f"Average per Problem: {avg_tokens:.2f} tokens")
+    
+    print("="*50)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
