@@ -28,15 +28,28 @@ class InputText(BaseModel):
 
 class OutputPrediction(BaseModel):
     values: List[float]
+    usage: dict
 
 @app.post("/predict", response_model=OutputPrediction)
 async def predict(input_text: InputText):
     max_seq_length = 1024
     inputs = tokenizer(input_text.texts, return_tensors="pt", padding=True, truncation=True, max_length=max_seq_length)
     print("Length of tokenized sequences:", inputs["input_ids"].shape[1])
+    
+    # Calculate token usage
+    prompt_tokens = sum(len(tokenizer.tokenize(text)) for text in input_text.texts)
+    total_tokens = inputs["input_ids"].shape[1] * inputs["input_ids"].shape[0]  # batch_size * sequence_length
+    completion_tokens = 0  # Verifier doesn't generate tokens, only processes input
+    
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens
+    }
+    
     inputs = {name: tensor.to(value_model.device) for name, tensor in inputs.items()}
     indices = torch.sum(inputs["attention_mask"], dim=-1) - 1
     with torch.no_grad():
         outputs = value_model(**inputs).logits.squeeze(-1)[torch.arange(len(indices)), indices].cpu().numpy().tolist()
-    return {"values": outputs}
+    return {"values": outputs, "usage": usage}
 

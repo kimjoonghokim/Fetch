@@ -61,7 +61,10 @@ def call_value(question, path):
         query = query[:-len(tokenizer.eos_token)] # this value is not trained like this
     pload ={"texts": [query]}
     response =requests.post(url, json=pload)
-    return (min(max(response.json()["values"][0], -1.), 1.) + 1.) / 2
+    response_json = response.json()
+    value = (min(max(response_json["values"][0], -1.), 1.) + 1.) / 2
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return value, usage
 
 #### Search Tree ####
 class Node:
@@ -94,9 +97,14 @@ class Tree:
         self.all_nodes = []
         self.root = Node(None, 0, None, 0, self)
         self.all_nodes.append(self.root)
+        # Policy server token tracking
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
         self.runtime_seconds = 0.0
 
     def return_timestep(self):
@@ -145,7 +153,10 @@ def worker(tree):
                     tree.completion_tokens += usage.get("completion_tokens", 0)
                     tree.total_tokens += usage.get("total_tokens", 0)
                     # get next step value
-                    next_value = call_value(question, path + next_step)
+                    next_value, verifier_usage = call_value(question, path + next_step)
+                    tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+                    tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+                    tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
                     state = tree.add_node(next_step, next_value, action, assert_end(next_step))
                     fix_value(state)
                     # print((next_step, next_value))
@@ -162,17 +173,37 @@ pool.close()
 
 total_runtime = time.time() - start_time
 
+# Policy server token totals
 total_prompt_tokens = sum([p.prompt_tokens for p in problems])
 total_completion_tokens = sum([p.completion_tokens for p in problems])
 total_tokens = sum([p.total_tokens for p in problems])
+
+# Verifier server token totals
+total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
+total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
+total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
+
+# Combined totals
+total_all_tokens = total_tokens + total_verifier_tokens
 
 final_data = {
     'problems': problems,
     'metrics': {
         'total_runtime': total_runtime,
-        'total_prompt_tokens': total_prompt_tokens,
-        'total_completion_tokens': total_completion_tokens,
-        'total_tokens': total_tokens
+        'policy_server': {
+            'total_prompt_tokens': total_prompt_tokens,
+            'total_completion_tokens': total_completion_tokens,
+            'total_tokens': total_tokens
+        },
+        'verifier_server': {
+            'total_prompt_tokens': total_verifier_prompt_tokens,
+            'total_completion_tokens': total_verifier_completion_tokens,
+            'total_tokens': total_verifier_tokens
+        },
+        'combined': {
+            'total_tokens': total_all_tokens,
+            'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+        }
     }
 }
 
@@ -181,6 +212,12 @@ with open(output_fpath, "wb") as f:
 
 print("\n=== Beam Search Complete ===")
 print(f"Total runtime: {total_runtime:.2f} seconds")
-print(f"Total tokens: {total_tokens}")
-print(f"  (Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens})")
+print(f"\nPolicy Server Tokens:")
+print(f"  Total: {total_tokens}")
+print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
+print(f"\nVerifier Server Tokens:")
+print(f"  Total: {total_verifier_tokens}")
+print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+print(f"\nCombined Total: {total_all_tokens}")
+print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
 print(f"Results saved to {output_fpath}")
