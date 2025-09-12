@@ -1,10 +1,21 @@
-# Fetch — Efficient Tree Search for LLM Reasoning
+# New README (under construction)
+
+## 🚀 Setup (NEW):
+
+These instructions are written assuming you are cloning this repo into a 4 GPU Runpod
+
+### 📌 Step 1. Install packages and setup service of policy, verifier, and embedding model
+After cloning the repo into your Runpod, simply run the following command to run the setup script.
+```
+bash setup.sh
+```
+The setup script installs the required packages as well as launches the policy, verifier, and embedding servers on their respective GPUs. The model paths for these servers and which GPU it is running on are defined in the server_config.env file.
+# (OLD README) Fetch — Efficient Tree Search for LLM Reasoning
 
 Code for the paper [Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls](https://arxiv.org/abs/2502.11183)
 
 ---
-
-## 🚀 Setup
+## (OLD)🚀 Setup
 
 Follow the steps below to run our scripts:
 
