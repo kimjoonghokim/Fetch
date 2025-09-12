@@ -9,7 +9,27 @@ After cloning the repo into your Runpod, simply run the following command to run
 ```
 bash setup.sh
 ```
-The setup script installs the required packages as well as launches the policy, verifier, and embedding servers on their respective GPUs. The model paths for these servers and which GPU it is running on are defined in the server_config.env file.
+The setup script installs the required packages as well as launches the policy, verifier, and embedding servers on their respective GPUs. The model paths for these servers and which GPU it is running on are defined in the `server_config.env` file. If you would like to use a different model, please change the model path in `server_config.env` before running the above setup script.
+
+### 📌 Step 2. Run tree search algorithms
+Within the `search` directory there are seperate directories for each tree search algorithm (`beamsearch`, `bfs`, `mcts`). Navigate to the directory of the search algorithm you would like to run and simply run the corresponding Python file.  
+  
+  For example for beamsearch:
+```
+python beamsearch.py
+```
+  For bfs:
+```
+python bfs.py
+```
+  For mcts:
+```
+python run_mcts.py
+```
+
+By default, the algorithms are run on a toy dataset of 16 questions, but you can change/specify the path in the `experiments_config.env` file within this `search` directory. Simply change the `PATH_TO_DATASET` variable to reflect the dataset you would like to use. We have also included various other datasets to use in the `dataset` directory
+
+
 # (OLD README) Fetch — Efficient Tree Search for LLM Reasoning
 
 Code for the paper [Don't Get Lost in the Trees: Streamlining LLM Reasoning by Overcoming Tree Search Exploration Pitfalls](https://arxiv.org/abs/2502.11183)
