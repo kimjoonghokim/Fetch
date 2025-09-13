@@ -7,6 +7,7 @@ import requests
 from tqdm import tqdm
 import time
 from dotenv import load_dotenv
+import subprocess
 
 LIMIT=50
 BUDGET=5
@@ -321,3 +322,6 @@ print(f"\nCombined Total: {total_all_tokens}")
 print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
 print(f"Embedding contribution: {total_embedding_tokens / total_all_tokens * 100:.1f}%")
 print(f"Results saved to {output_fpath}")
+
+print(f"\nRunning evaluation script on {output_fpath}...")
+subprocess.run(["python", "eval_search.py", output_fpath])
