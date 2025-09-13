@@ -13,6 +13,18 @@ class Node:
         self.tree = tree
         self.is_leaf = is_leaf
 
+class VirtualNode:
+    def __init__(self, nodes, parent=None):
+        self.nodes = nodes
+        self.tree = None
+        self.value = 0
+        self.visited = False
+        self.children = []
+        self.cache = []
+        self.parent = parent
+        self.is_leaf = False
+        self.timestep = 0
+
 class Tree:
     def __init__(self, question, answer):
         self.question = question
@@ -75,7 +87,7 @@ def main(results_file_path):
             problems = data['problems']
             metrics = data['metrics']
     except (IOError, pickle.UnpicklingError, KeyError) as e:
-        print(f"Error: Could not load or parse the results file. Make sure it's a valid pickle file in the new format. Details: {e}")
+        print(f"Error: Could not load or parse the results file. Make sure it's a valid pickle file. Details: {e}")
         return
 
     total_problems = len(problems)
@@ -90,10 +102,21 @@ def main(results_file_path):
     for problem in problems:
         gold_answer = extract_gold_answer(problem.answer)
         
-        leaf_nodes = [node for node in problem.all_nodes if node.is_leaf]
-        
-        if leaf_nodes:
-            best_node = max(leaf_nodes, key=lambda x: x.value)
+        best_node = None
+        if hasattr(problem, 'virtual_nodes'):
+            # It's from beamsearch_merge.py
+            leaf_nodes = [node for node in problem.virtual_nodes if node.is_leaf]
+            if leaf_nodes:
+                best_virtual_node = max(leaf_nodes, key=lambda x: x.value)
+                if best_virtual_node.nodes:
+                    best_node = best_virtual_node.nodes[0]
+        else:
+            # It's from beamsearch.py
+            leaf_nodes = [node for node in problem.all_nodes if node.is_leaf]
+            if leaf_nodes:
+                best_node = max(leaf_nodes, key=lambda x: x.value)
+
+        if best_node:
             predicted_answer = extract_pred_answer(best_node.content)
             if are_answers_equal(predicted_answer, gold_answer):
                 correct_solutions += 1
@@ -132,12 +155,11 @@ def main(results_file_path):
     print(f"Median per Problem:  {median_runtime:.2f} seconds")
     print("-" * 50)
 
-    # Token Usage Metrics - Updated for new structure
-    # Check if we have the new metrics structure
+    # Token Usage Metrics
     if 'policy_server' in metrics and 'verifier_server' in metrics:
-        # New structure with separate server tracking
         policy_metrics = metrics['policy_server']
         verifier_metrics = metrics['verifier_server']
+        embedding_metrics = metrics.get('embedding_server', {'total_tokens': 0, 'total_prompt_tokens': 0, 'total_completion_tokens': 0})
         combined_metrics = metrics.get('combined', {})
         
         policy_tokens = policy_metrics.get('total_tokens', 0)
@@ -147,10 +169,15 @@ def main(results_file_path):
         verifier_tokens = verifier_metrics.get('total_tokens', 0)
         verifier_prompt = verifier_metrics.get('total_prompt_tokens', 0)
         verifier_completion = verifier_metrics.get('total_completion_tokens', 0)
+
+        embedding_tokens = embedding_metrics.get('total_tokens', 0)
+        embedding_prompt = embedding_metrics.get('total_prompt_tokens', 0)
+        embedding_completion = embedding_metrics.get('total_completion_tokens', 0)
         
-        total_tokens = combined_metrics.get('total_tokens', policy_tokens + verifier_tokens)
+        total_tokens = combined_metrics.get('total_tokens', policy_tokens + verifier_tokens + embedding_tokens)
         verifier_percentage = combined_metrics.get('verifier_percentage', 0)
-        
+        embedding_percentage = combined_metrics.get('embedding_percentage', 0)
+
         print("--- Token Usage ---")
         print(f"Total Tokens Used:   {total_tokens}")
         print(f"")
@@ -164,11 +191,18 @@ def main(results_file_path):
         print(f"  - Prompt Tokens:   {verifier_prompt}")
         print(f"  - Completion Tokens: {verifier_completion}")
         print(f"")
+        print(f"Embedding Server:")
+        print(f"  - Total Tokens:    {embedding_tokens}")
+        print(f"  - Prompt Tokens:   {embedding_prompt}")
+        print(f"  - Completion Tokens: {embedding_completion}")
+        print(f"")
         print(f"Verifier Contribution: {verifier_percentage:.1f}%")
+        if embedding_tokens > 0:
+            print(f"Embedding Contribution: {embedding_percentage:.1f}%")
         print(f"Average per Problem: {total_tokens / total_problems:.2f} tokens")
         
     else:
-        # Fallback to old structure for backward compatibility
+        # Fallback for old format
         total_tokens = metrics.get('total_tokens', 0)
         prompt_tokens = metrics.get('total_prompt_tokens', 0)
         completion_tokens = metrics.get('total_completion_tokens', 0)
