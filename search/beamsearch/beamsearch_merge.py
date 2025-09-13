@@ -78,7 +78,9 @@ def call_esm(texts):
     texts = [clean_text(text) for text in texts]
     pload ={"texts": texts, "d": DISTANCE}
     response =requests.post(url, json=pload)
-    return response.json()["labels"]
+    response_json = response.json()
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return response_json["labels"], usage
 
 #### Search Tree ####
 class Node:
@@ -126,7 +128,10 @@ class VirtualNode:
         clusters = {}
         for gid, group in enumerate(groups):
             if len(group) > 0:
-                labels = call_esm([node.content for node in group])
+                labels, usage = call_esm([node.content for node in group])
+                self.tree.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
+                self.tree.embedding_completion_tokens += usage.get("completion_tokens", 0)
+                self.tree.embedding_total_tokens += usage.get("total_tokens", 0)
                 for node, label in zip(group, labels):
                     key = (gid, label)
                     if key not in clusters:
@@ -158,6 +163,10 @@ class Tree:
         self.verifier_prompt_tokens = 0
         self.verifier_completion_tokens = 0
         self.verifier_total_tokens = 0
+        # Embedding server token tracking
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
         self.runtime_seconds = 0.0
 
     def return_timestep(self):
@@ -259,8 +268,13 @@ total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
 total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
 total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
 
+# Embedding server token totals
+total_embedding_prompt_tokens = sum([p.embedding_prompt_tokens for p in problems])
+total_embedding_completion_tokens = sum([p.embedding_completion_tokens for p in problems])
+total_embedding_tokens = sum([p.embedding_total_tokens for p in problems])
+
 # Combined totals
-total_all_tokens = total_tokens + total_verifier_tokens
+total_all_tokens = total_tokens + total_verifier_tokens + total_embedding_tokens
 
 final_data = {
     'problems': problems,
@@ -276,9 +290,15 @@ final_data = {
             'total_completion_tokens': total_verifier_completion_tokens,
             'total_tokens': total_verifier_tokens
         },
+        'embedding_server': {
+            'total_prompt_tokens': total_embedding_prompt_tokens,
+            'total_completion_tokens': total_embedding_completion_tokens,
+            'total_tokens': total_embedding_tokens
+        },
         'combined': {
             'total_tokens': total_all_tokens,
-            'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+            'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0,
+            'embedding_percentage': (total_embedding_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
         }
     }
 }
@@ -294,6 +314,10 @@ print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
 print(f"\nVerifier Server Tokens:")
 print(f"  Total: {total_verifier_tokens}")
 print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+print(f"\nEmbedding Server Tokens:")
+print(f"  Total: {total_embedding_tokens}")
+print(f"  Prompt: {total_embedding_prompt_tokens}, Completion: {total_embedding_completion_tokens}")
 print(f"\nCombined Total: {total_all_tokens}")
 print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
+print(f"Embedding contribution: {total_embedding_tokens / total_all_tokens * 100:.1f}%")
 print(f"Results saved to {output_fpath}")
