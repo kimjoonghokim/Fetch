@@ -7,6 +7,7 @@ import requests
 from tqdm import tqdm
 import time
 from dotenv import load_dotenv
+import subprocess
 
 LIMIT=50
 BUDGET=5
@@ -210,7 +211,7 @@ final_data = {
 with open(output_fpath, "wb") as f:
     pickle.dump(final_data, f)
 
-print("\n=== Beam Search Complete ===")
+print("=== Beam Search Complete ===")
 print(f"Total runtime: {total_runtime:.2f} seconds")
 print(f"\nPolicy Server Tokens:")
 print(f"  Total: {total_tokens}")
@@ -221,3 +222,6 @@ print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_co
 print(f"\nCombined Total: {total_all_tokens}")
 print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
 print(f"Results saved to {output_fpath}")
+
+print(f"\nRunning evaluation script on {output_fpath}...")
+subprocess.run(["python", "eval_search.py", output_fpath])

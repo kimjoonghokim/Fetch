@@ -22,19 +22,26 @@ max_seq_length = 256
 
 def compute_emb(texts):
     inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=max_seq_length)
+    num_tokens = inputs['input_ids'].numel()
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     # Get the embeddings
     with torch.no_grad():
         embeddings = model(**inputs, output_hidden_states=True, return_dict=True).pooler_output
         embeddings = F.normalize(embeddings, p=2, dim=1)
-    return embeddings.cpu().numpy()
+    return embeddings.cpu().numpy(), num_tokens
 
 def cluster(texts, d=0.5): #CHANGE THE d PARAMETER. HIGHER IT IS, LOOSER IT IS, LOWER = STRICTER (MERGE ONLY IF VERY SIMILAR)
+    if not texts:
+        return [], 0
+    
     if len(texts) < 2:
-        return [0]
-    embs = compute_emb(texts)
+        inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=max_seq_length)
+        num_tokens = inputs['input_ids'].numel()
+        return [0] * len(texts), num_tokens
+
+    embs, num_tokens = compute_emb(texts)
     clustering = AgglomerativeClustering(n_clusters=None, metric="cosine", linkage="average", distance_threshold=d).fit(embs)
-    return clustering.labels_.tolist()
+    return clustering.labels_.tolist(), num_tokens
 
 app = FastAPI()
 
@@ -44,11 +51,13 @@ class InputText(BaseModel):
 
 class OutputPrediction(BaseModel):
     labels: List
+    usage: dict
 
 @app.post("/predict", response_model=OutputPrediction)
 async def predict(input_text: InputText):
-    labels = cluster(input_text.texts, input_text.d)
-    return {"labels": labels}
+    labels, num_tokens = cluster(input_text.texts, input_text.d)
+    usage = {"prompt_tokens": num_tokens, "completion_tokens": 0, "total_tokens": num_tokens}
+    return {"labels": labels, "usage": usage}
 
 @app.get("/health")
 async def health_check():

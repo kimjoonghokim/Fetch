@@ -5,15 +5,25 @@ import numpy as np
 import jsonlines
 import requests
 from tqdm import tqdm
+import time
 from dotenv import load_dotenv
+import subprocess
 
 LIMIT=50
 BUDGET=5
 BEAM=5
 TEMPERATURE=0.8
 DISTANCE=0.15
-data_fpath = "gsm8k/test.jsonl" # path to the test set
-output_fpath = f"test_gsm8k_beamsearch_merge_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
+load_dotenv(dotenv_path='../experiments_config.env')
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None # path to the test set
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
+output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_merge_b{BUDGET}_t{TEMPERATURE}.pkl"
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
@@ -42,7 +52,10 @@ def call_policy(question, path):
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
             "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
     response =requests.post(url, json=pload)
-    return json.loads(response.content)["choices"][0]["text"]
+    response_json = response.json()
+    choice = response_json["choices"][0]
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return choice["text"], usage
 
 def call_value(question, path):
     url = "http://127.0.0.1:8002/predict"
@@ -51,7 +64,10 @@ def call_value(question, path):
         query = query[:-len(tokenizer.eos_token)] # this value is not trained like this
     pload ={"texts": [query]}
     response =requests.post(url, json=pload)
-    return (min(max(response.json()["values"][0], -1.), 1.) + 1.) / 2
+    response_json = response.json()
+    value = (min(max(response_json["values"][0], -1.), 1.) + 1.) / 2
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return value, usage
 
 def clean_text(text):
     if text.endswith(tokenizer.eos_token):
@@ -63,7 +79,9 @@ def call_esm(texts):
     texts = [clean_text(text) for text in texts]
     pload ={"texts": texts, "d": DISTANCE}
     response =requests.post(url, json=pload)
-    return response.json()["labels"]
+    response_json = response.json()
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return response_json["labels"], usage
 
 #### Search Tree ####
 class Node:
@@ -111,7 +129,10 @@ class VirtualNode:
         clusters = {}
         for gid, group in enumerate(groups):
             if len(group) > 0:
-                labels = call_esm([node.content for node in group])
+                labels, usage = call_esm([node.content for node in group])
+                self.tree.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
+                self.tree.embedding_completion_tokens += usage.get("completion_tokens", 0)
+                self.tree.embedding_total_tokens += usage.get("total_tokens", 0)
                 for node, label in zip(group, labels):
                     key = (gid, label)
                     if key not in clusters:
@@ -135,6 +156,19 @@ class Tree:
         self.root = Node(None, 0, None, 0, self)
         self.virtual_nodes = [VirtualNode([self.root])]
         self.all_nodes.append(self.root)
+        # Policy server token tracking
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
+        # Embedding server token tracking
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
+        self.runtime_seconds = 0.0
 
     def return_timestep(self):
         return max([node.timestep for node in self.all_nodes])
@@ -186,6 +220,7 @@ for instance in dataset:
 
 import multiprocessing
 def worker(tree):
+    start_time = time.time()
     question = tree.question
     for i in range(LIMIT):
         actions = tree.get_beam_to_expand(BEAM)
@@ -196,9 +231,15 @@ def worker(tree):
                     # get next step content
                     action = _action.nodes[j % len(_action.nodes)]
                     path = action.print_path()
-                    next_step = call_policy(question, path)
+                    next_step, usage = call_policy(question, path)
+                    tree.prompt_tokens += usage.get("prompt_tokens", 0)
+                    tree.completion_tokens += usage.get("completion_tokens", 0)
+                    tree.total_tokens += usage.get("total_tokens", 0)
                     # get next step value
-                    next_value = call_value(question, path + next_step)
+                    next_value, verifier_usage = call_value(question, path + next_step)
+                    tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+                    tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+                    tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
                     state = tree.add_node(next_step, next_value, action, i + 1, assert_end(next_step))
                     fix_value(state)
                     # print((next_step, next_value))
@@ -207,10 +248,80 @@ def worker(tree):
                 _action.merge_nodes()
         else:
             break
+    tree.runtime_seconds = time.time() - start_time
     return tree
+
+start_time = time.time()
 
 pool = multiprocessing.Pool(80)
 problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))    
 pool.close()
 
-pickle.dump(problems, open(output_fpath, "wb"))
+total_runtime = time.time() - start_time
+
+# Policy server token totals
+total_prompt_tokens = sum([p.prompt_tokens for p in problems])
+total_completion_tokens = sum([p.completion_tokens for p in problems])
+total_tokens = sum([p.total_tokens for p in problems])
+
+# Verifier server token totals
+total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
+total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
+total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
+
+# Embedding server token totals
+total_embedding_prompt_tokens = sum([p.embedding_prompt_tokens for p in problems])
+total_embedding_completion_tokens = sum([p.embedding_completion_tokens for p in problems])
+total_embedding_tokens = sum([p.embedding_total_tokens for p in problems])
+
+# Combined totals
+total_all_tokens = total_tokens + total_verifier_tokens + total_embedding_tokens
+
+final_data = {
+    'problems': problems,
+    'metrics': {
+        'total_runtime': total_runtime,
+        'policy_server': {
+            'total_prompt_tokens': total_prompt_tokens,
+            'total_completion_tokens': total_completion_tokens,
+            'total_tokens': total_tokens
+        },
+        'verifier_server': {
+            'total_prompt_tokens': total_verifier_prompt_tokens,
+            'total_completion_tokens': total_verifier_completion_tokens,
+            'total_tokens': total_verifier_tokens
+        },
+        'embedding_server': {
+            'total_prompt_tokens': total_embedding_prompt_tokens,
+            'total_completion_tokens': total_embedding_completion_tokens,
+            'total_tokens': total_embedding_tokens
+        },
+        'combined': {
+            'total_tokens': total_all_tokens,
+            'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0,
+            'embedding_percentage': (total_embedding_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+        }
+    }
+}
+
+with open(output_fpath, "wb") as f:
+    pickle.dump(final_data, f)
+
+print("\n=== Beam Search Merge Complete ===")
+print(f"Total runtime: {total_runtime:.2f} seconds")
+print(f"\nPolicy Server Tokens:")
+print(f"  Total: {total_tokens}")
+print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
+print(f"\nVerifier Server Tokens:")
+print(f"  Total: {total_verifier_tokens}")
+print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+print(f"\nEmbedding Server Tokens:")
+print(f"  Total: {total_embedding_tokens}")
+print(f"  Prompt: {total_embedding_prompt_tokens}, Completion: {total_embedding_completion_tokens}")
+print(f"\nCombined Total: {total_all_tokens}")
+print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
+print(f"Embedding contribution: {total_embedding_tokens / total_all_tokens * 100:.1f}%")
+print(f"Results saved to {output_fpath}")
+
+print(f"\nRunning evaluation script on {output_fpath}...")
+subprocess.run(["python", "eval_search.py", output_fpath])
