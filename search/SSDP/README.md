@@ -1,55 +1,109 @@
-# SSDP: Semantic Similarity based Dynamic Pruning
+# 🌳 SSDP: Semantic Similarity–based Dynamic Pruning
 
-This document provides an overview of the new and improved SSDP algorithm, a sophisticated search strategy for solving complex problems. This implementation is designed to be efficient, powerful, and easy to use, even for those who are new to the concepts of tree-of-thoughts search.
+**Goal:**  
+Efficiently explore a reasoning tree by balancing **exploration** (diverse paths) and **exploitation** (high-confidence paths), while avoiding redundant computation through semantic similarity clustering and dynamic pruning.
 
-## What is SSDP?
+---
 
-At its core, SSDP is a search algorithm that explores a "tree of thoughts" to find the best solution to a problem. It starts with an initial thought (the problem statement) and then explores different lines of reasoning (branches of the tree) to find the best possible answer.
+## 🔹 Core Ideas
 
-What makes this implementation of SSDP special is that it is designed to be highly efficient and intelligent. It uses a combination of advanced techniques to explore the search space in a smart way, which saves time and computational resources.
+1. **Batch Expansion (B)**  
+Generate up to B candidate child nodes at each level.  
+Use embeddings to measure semantic similarity among candidates.
 
-### Key Features
+2. **Clustering & Merging (Intra-Cluster)**  
+Cluster semantically similar nodes.  
+Merge each cluster into a representative node:  
+- Keep the highest-confidence node.  
+- Add a similarity bonus proportional to merged siblings’ scores.
 
-*   **No Verifier Model:** Unlike other search algorithms, SSDP does not require a separate "verifier" model to score the different lines of reasoning. Instead, it uses a sophisticated, hardcoded scoring algorithm that is based on a combination of factors, including the confidence of the language model, the score of the parent thought, and a "voting" mechanism based on semantic similarity.
-*   **Semantic Merging:** SSDP is smart enough to recognize when it is exploring the same line of reasoning multiple times. It uses an embedding model to identify semantically similar thoughts at the same level of the tree and merges them into a single, more confident thought. This prevents the algorithm from wasting time on redundant exploration.
-*   **Advanced Pruning:** SSDP uses a combination of advanced pruning techniques to eliminate unpromising paths early on. This includes:
-    *   **Score-based pruning:** Paths with low scores are pruned.
-    *   **Heuristic pruning:** Paths that are too long, contain repetitive phrases, or are not relevant to the original question are pruned.
-    *   **Depth-aware and budget-aware pruning:** The pruning is more aggressive at deeper levels of the tree and when the search is approaching its computational budget.
-*   **Explore/Exploit Status:** Each line of reasoning is labeled as either "explore" or "exploit." This allows the algorithm to be more flexible and to backtrack from unpromising paths.
-*   **Early Stopping:** The algorithm will automatically stop early if it is no longer making significant progress, which saves time and resources.
+3. **Leader Node & Diversity Reward (Inter-Cluster)**  
+Leader = highest-scoring cluster representative.  
+Other clusters sufficiently different from leader receive a diversity reward.  
+Diversity reward decays with depth: strong early, weaker deeper.
 
-## How to Run SSDP
+4. **Node Scoring Function**  
 
-Running the SSDP algorithm is a two-step process:
+Each node’s score is computed as:
+```
+score(node) = confidence + similarity_bonus (intra-cluster) + diversity_reward (inter-cluster) + parent_score
+```
 
-1.  **Run the Search:** First, you need to run the `SSDP.py` script to perform the search and generate a results file. This file will contain all the information about the search process, including all the thoughts that were explored and their scores.
 
-    ```bash
-    python SSDP.py
-    ```
+5. **Dynamic Beam Width (N)**  
+Beam width = number of clusters ≤ N.  
+If fewer than N clusters exist → beam narrows naturally.  
+Ensures the beam adapts to problem complexity.
 
-2.  **Evaluate the Results:** After the search is complete, you can use the `eval_ssdp.py` script to analyze the results and get a detailed report on the performance of the algorithm.
+---
 
-    ```bash
-    python eval_ssdp.py <results_file.pkl>
-    ```
+## 🔹 Expansion Budget Allocation
 
-    Replace `<results_file.pkl>` with the name of the results file that was generated in the previous step (e.g., `test_gsm8k_ssdp_v2.pkl`).
+- Allocate expansions per node proportional to its score relative to siblings.  
+- Ensures promising but diverse nodes get more chance to expand.
 
-## How to Configure SSDP
+---
 
-All of the parameters for the SSDP algorithm can be configured in the `config.py` file. This file is well-commented and easy to understand, even for novices. Here is an overview of the most important parameters:
+## 🔹 Hybrid Pruning Strategy
 
-*   **`LIMIT`:** The maximum number of iterations for the search.
-*   **`MAX_DEPTH`:** The maximum depth of the search tree.
-*   **`OVERALL_SCORE_THRESHOLD`:** The minimum score for a path to be considered promising. This is the most important parameter for controlling the trade-off between performance and accuracy.
-*   **`SIMILARITY_THRESHOLD`:** The threshold for merging semantically similar nodes.
-*   **`MAX_PARALLEL_PATHS`:** The maximum number of paths to explore in parallel.
-*   **`MIN_EXPANSION_BUDGET` and `MAX_EXPANSION_BUDGET`:** The minimum and maximum number of times to expand each node.
+**Goal:** Reduce wasted computation while balancing exploration/exploitation.
 
-By tuning these parameters, you can find the optimal settings for your specific needs.
+**Step 1: Compute thresholds**  
+- Relative-to-leader threshold: `α * leader_score` (preserve diversity early).  
+- Depth-scaled minimum: `min_score(d) = β + γ * depth` (tighter pruning deeper).
 
-## Conclusion
+**Step 2: Apply hybrid pruning**
 
-This new and improved implementation of the SSDP algorithm is a powerful and efficient tool for solving complex problems. It is designed to be easy to use and configure, even for novices. I am confident that you will find it to be a valuable addition to your toolkit.
+keep node if score(node) >= max(α * leader_score, min_score(depth))
+
+
+
+- Early levels → relative-to-leader dominates → keeps diverse paths.  
+- Later levels → depth-scaled dominates → focuses on high-confidence exploitation.
+
+---
+
+## 🔹 Stopping Criteria
+
+Stop expanding if any of the following are met:
+
+1. High-confidence terminal node: score ≥ threshold (e.g., 0.9).  
+2. Terminal convergence: new terminals don’t improve best score by more than δ.  
+3. Max terminal nodes reached: e.g., 5–10.  
+4. Beam collapse: beam shrinks to 1 cluster for L consecutive levels.
+
+---
+
+## 🔹 Efficiency Guidelines
+
+- Batch embeddings for all candidates per level.  
+- Approximate clustering using centroids rather than full pairwise comparisons.  
+- Recommended B ≈ 3–5 × N.  
+- Accept fewer than N clusters as a natural indication of low complexity.
+
+---
+
+## 🔹 Benefits
+
+- Adaptive exploration/exploitation: beam adjusts naturally.  
+- Redundant path elimination: similarity-based merging reduces wasted compute.  
+- Dynamic pruning: hybrid threshold ensures efficient, depth-aware pruning.  
+- Flexible: works with any model that can provide confidence scores and embeddings.
+
+---
+
+## 🔹 High-Level Flow
+
+1. Generate B candidates at current level.  
+2. Cluster semantically similar nodes → merge → add similarity bonus.  
+3. Score representatives (confidence + similarity bonus + diversity + parent score).  
+4. Keep top N clusters → assign diversity rewards relative to leader.  
+5. Apply hybrid pruning (relative-to-leader + depth-scaled cutoff).  
+6. Allocate expansions proportionally to scores.  
+7. Repeat until stopping criteria are met.
+
+---
+
+⚡ **In short:**  
+SSDP = *beam search with semantic clustering, dynamic scoring, diversity incentives, and depth-aware pruning*.  
+It efficiently explores reasoning paths, balances exploration/exploitation, and adapts to problem co

@@ -2,330 +2,335 @@ import os
 import json
 import pickle
 import numpy as np
+import jsonlines
 import requests
 from tqdm import tqdm
-from typing import List, Dict, Optional, Tuple
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import sys
 import time
-from multiprocessing import Pool, Manager
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import Counter
-from config import *
+from dotenv import load_dotenv
+import subprocess
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics.pairwise import cosine_similarity
 
-# File paths
-output_fpath = f"test_gsm8k_ssdp_v3.pkl"
+# Load environment variables
+load_dotenv(dotenv_path='../experiments_config.env')
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
 
-# Task dependent functions
-def assert_end(text):
-    """Check if the reasoning has reached a conclusion."""
-    return True if text and text.strip().split("\n")[-1].startswith("The answer is") else False
+load_dotenv(dotenv_path='../../server_config.env')
+policy_fpath = os.getenv("POLICY_MODEL_PATH")
+
+# SSDP Parameters from README
+B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
+N = int(os.getenv("SSDP_N", 5))   # Dynamic Beam Width
+ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold
+BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
+GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
+DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
+MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 5))
+L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
+TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.8))
+DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.15))
+
+
+output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
 
 from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained(POLICY_MODEL)
+tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
+MAX_LEN_PER_STEP = 256
+
+def assert_end(text):
+    return True if "The answer is" in text and text.endswith(tokenizer.eos_token) else False
+
+def fix_value(state):
+    if state.parent is not None: # repeat
+        if state.parent.content == state.content:
+            state.confidence = -1
+    if state.content is not None and (len(state.content) == 0 or len(tokenizer.tokenize(state.content)) > MAX_LEN_PER_STEP): # too short or too long
+        state.confidence = -1
+    if state.content.endswith(tokenizer.eos_token) and not assert_end(state.content):
+        state.confidence = -1
+    return state
 
 def call_policy(question, path):
-    """Call the policy model to generate next step and get logprobs."""
-    url = POLICY_URL
-    model = POLICY_MODEL
+    url = "http://127.0.0.1:8000/v1/completions"
+    model = policy_fpath
     query = f"Question: {question}\nAnswer:{path}"
-    pload = {
-        "prompt": query, 
-        "model": model, 
-        "temperature": TEMPERATURE, 
-        "max_tokens": 512,
-        "stop": ["\n"], 
-        "logprobs": 5,  # Request logprobs for scoring
-        "include_stop_str_in_output": True, 
-        "skip_special_tokens": False
-    }
-    response = requests.post(url, json=pload)
+    pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
+            "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False, "logprobs": 1}
+    response =requests.post(url, json=pload)
     response_json = response.json()
     choice = response_json["choices"][0]
     usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-    
-    return choice, usage
+    return choice["text"], choice.get("logprobs"), usage
 
-#### Helper for Scoring ####
+def clean_text(text):
+    if text.endswith(tokenizer.eos_token):
+        text = text[:-len(tokenizer.eos_token)]
+    return text.strip()
 
-def _calculate_average_confidence(logprobs: List[float]) -> float:
-    """Calculate average log probability confidence."""
-    if not logprobs:
-        return 0.0
-    avg_logprob = np.mean(logprobs)
-    return float(np.exp(avg_logprob))
+def call_esm(texts):
+    url = "http://127.0.0.1:8003/predict"
+    texts = [clean_text(text) for text in texts]
+    pload ={"texts": texts, "d": DISTANCE}
+    response =requests.post(url, json=pload)
+    response_json = response.json()
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    # we need the embeddings, not the labels
+    return response_json["embeddings"], usage
 
-#### SSDP Search Tree ####
-
-class SSDPNode:
-    """
-    Simplified node for the new SSDP algorithm.
-    """
-    
-    def __init__(self, choice, parent, timestep, tree, is_leaf=False):
+class Node:
+    def __init__(self, content, confidence, parent, timestep, tree, is_leaf=False):
+        self.content = content
+        self.confidence = confidence # Base confidence from policy
         self.parent = parent
         self.children = []
         self.timestep = timestep
         self.tree = tree
         self.is_leaf = is_leaf
+        self.embedding = None
         
-        self.content = None
-        self.logprobs_data = None
-        
-        self.overall_score = 0.0
-        self.confidence_score = 0.0
-        self.semantic_embedding = None
-        self.merged_nodes = []
-        self.pruned = False
+        # SSDP scores
+        self.similarity_bonus = 0
+        self.diversity_reward = 0
+        self.parent_score = parent.score if parent else 0
+        self.score = 0
 
-        if choice:
-            self.content = choice["text"]
-            self.logprobs_data = choice.get("logprobs", {})
-            self._calculate_scores()
-
-    def _calculate_scores(self):
-        """Calculate scores based only on the confidence score."""
-        if not self.logprobs_data:
-            return
-
-        token_logprobs = self.logprobs_data.get("token_logprobs", [])
-        valid_logprobs = [lp for lp in token_logprobs if lp is not None]
-        if valid_logprobs:
-            self.confidence_score = _calculate_average_confidence(valid_logprobs)
-            self.overall_score = self.confidence_score
-
-    def get_primary_score(self):
-        return self.overall_score
-    
     def get_depth(self):
-        return self.timestep
-    
+        return len(self.return_path()) + 1
+
     def return_path(self):
         if self.content is None:
             return []
         if self.parent is None:
-            return [self.content] if self.content is not None else []
-        return self.parent.return_path() + ([self.content] if self.content is not None else [])
-    
+            return [self.content]
+        return self.parent.return_path() + [self.content]
+
     def print_path(self):
         return "".join(self.return_path())
-    
-    def get_semantic_embedding(self, vectorizer):
-        if self.semantic_embedding is None and self.content:
-            text = self.content.strip()
-            if text:
-                try:
-                    self.semantic_embedding = vectorizer.transform([text]).toarray()[0]
-                except:
-                    self.semantic_embedding = np.zeros(vectorizer.get_feature_names_out().shape[0])
-        return self.semantic_embedding
-    
-    def is_similar_to(self, other_node, vectorizer, threshold=SIMILARITY_THRESHOLD):
-        if self.content is None or other_node.content is None:
-            return False
-        
-        emb1 = self.get_semantic_embedding(vectorizer)
-        emb2 = other_node.get_semantic_embedding(vectorizer)
-        
-        if emb1 is None or emb2 is None:
-            return False
-        
-        similarity = cosine_similarity([emb1], [emb2])[0, 0]
-        return similarity >= threshold
 
-class SSDPTree:
-    """
-    The new simplified SSDP Tree.
-    """
-    
+    def update_score(self):
+        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
+
+class Cluster:
+    def __init__(self, nodes):
+        self.nodes = sorted(nodes, key=lambda x: x.confidence, reverse=True)
+        self.representative = self.nodes[0]
+        self.similarity_bonus = sum(n.confidence for n in self.nodes[1:])
+        self.representative.similarity_bonus = self.similarity_bonus
+        self.representative.update_score()
+
+    @property
+    def score(self):
+        return self.representative.score
+
+class Tree:
     def __init__(self, question, answer):
         self.question = question
         self.answer = answer
-        self.all_nodes = []
-        self.root = SSDPNode(None, None, 0, self)
-        self.all_nodes.append(self.root)
+        self.root = Node(None, 1.0, None, 0, self) # Start with confidence 1
+        self.root.update_score()
+        self.all_nodes = [self.root]
+        self.terminal_nodes = []
+        self.beam = [self.root]
         
-        self.vectorizer = TfidfVectorizer(max_features=TFIDF_MAX_FEATURES, stop_words='english', ngram_range=TFIDF_NGRAM_RANGE)
-        self.vectorizer_fitted = False
-        
-        self.total_expansions = 0
-        self.total_merges = 0
-        self.total_prunes = 0
-        self.runtime_seconds = 0.0
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
+        # Token tracking
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
         self.total_tokens = 0
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
+        self.runtime_seconds = 0.0
 
-    def fit_vectorizer(self):
-        if not self.vectorizer_fitted:
-            texts = [node.content for node in self.all_nodes if node.content is not None]
-            texts.append(self.question)
-            if texts:
-                try:
-                    self.vectorizer.fit(texts)
-                    self.vectorizer_fitted = True
-                except:
-                    pass
-    
-    def add_node(self, choice, parent, is_leaf=False):
-        node = SSDPNode(choice, parent, parent.timestep + 1, self, is_leaf)
+    def add_node(self, content, confidence, parent, timestep, is_leaf=False):
+        node = Node(content, confidence, parent, timestep, self, is_leaf)
         parent.children.append(node)
         self.all_nodes.append(node)
-        self.total_expansions += 1
+        if is_leaf:
+            self.terminal_nodes.append(node)
         return node
-    
-    def get_nodes_to_expand(self, max_parallel_paths):
-        active_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf]
-        active_nodes.sort(key=lambda x: x.get_primary_score(), reverse=True)
-        return active_nodes[:max_parallel_paths]
-    
-    def merge_similar_nodes(self):
-        # ... (merging logic remains the same)
-        pass
 
-    def prune_nodes(self):
-        active_nodes = [n for n in self.all_nodes if not n.pruned and not n.is_leaf]
-        if not active_nodes:
-            return
+    def ssdp_step(self):
+        if not self.beam:
+            return False # End of search
 
-        active_nodes.sort(key=lambda x: x.get_primary_score())
-        
-        num_to_prune = int(len(active_nodes) * PRUNE_RATIO)
-        
-        for i in range(num_to_prune):
-            active_nodes[i].pruned = True
-            self.total_prunes += 1
-        
-        print(f"Pruned {num_to_prune} nodes.")
-
-    def get_best_terminal_node(self):
-        terminal_nodes = [node for node in self.all_nodes if node.is_leaf and not node.pruned]
-        if not terminal_nodes: return None
-        return max(terminal_nodes, key=lambda x: x.get_primary_score())
-
-def ssdp_worker(args):
-    tree, max_parallel_paths = args
-    question = tree.question
-    iteration = 0
-    
-    start_time = time.time()
-    tree.fit_vectorizer()
-    
-    print(f"\n--- Starting SSDP for question: {question[:50]}... ---")
-    
-    with ThreadPoolExecutor(max_workers=max_parallel_paths) as executor:
-        while iteration < LIMIT:
-            print(f"\n--- Iteration {iteration} ---")
-            nodes_to_expand = tree.get_nodes_to_expand(max_parallel_paths)
-            
-            if not nodes_to_expand:
-                print("No more nodes to expand. Stopping.")
-                break
-            
-            print(f"Expanding {len(nodes_to_expand)} nodes...")
-            for i, node in enumerate(nodes_to_expand):
-                print(f"  Node {i}: score={node.get_primary_score():.3f}, depth={node.get_depth()}")
-
-            future_to_node = {}
-            for node in nodes_to_expand:
+        # 1. Generate B candidates for each node in the beam
+        candidates = []
+        for node in self.beam:
+            if node.is_leaf:
+                continue
+            for _ in range(B // len(self.beam)):
                 path = node.print_path()
-                future = executor.submit(call_policy, question, path)
-                future_to_node[future] = node
+                next_step, logprobs, usage = call_policy(self.question, path)
+                self.prompt_tokens += usage.get("prompt_tokens", 0)
+                self.completion_tokens += usage.get("completion_tokens", 0)
+                self.total_tokens += usage.get("total_tokens", 0)
+                
+                if logprobs and logprobs.get('token_logprobs'):
+                    confidence = np.mean([p for p in logprobs.get('token_logprobs') if p is not None])
+                    confidence = np.exp(confidence)
+                else:
+                    confidence = 0.5 # Fallback confidence
+                
+                new_node = self.add_node(next_step, confidence, node, node.timestep + 1, assert_end(next_step))
+                fix_value(new_node)
+                if new_node.confidence > -1:
+                    candidates.append(new_node)
 
-            for future in as_completed(future_to_node):
-                node = future_to_node[future]
-                try:
-                    choice, usage = future.result()
-                    
-                    tree.total_prompt_tokens += usage.get("prompt_tokens", 0)
-                    tree.total_completion_tokens += usage.get("completion_tokens", 0)
-                    tree.total_tokens += usage.get("total_tokens", 0)
+        if not candidates:
+            return False
 
-                    is_terminal = assert_end(choice["text"])
-                    new_node = tree.add_node(choice, node, is_terminal)
-                    print(f"  New node created: score={new_node.get_primary_score():.3f}, depth={new_node.get_depth()}")
-                except Exception as e:
-                    print(f"Error expanding node: {e}")
-                    continue
+        # 2. Get embeddings for all candidates
+        texts = [c.content for c in candidates]
+        embeddings, usage = call_esm(texts)
+        self.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
+        self.embedding_completion_tokens += usage.get("completion_tokens", 0)
+        self.embedding_total_tokens += usage.get("total_tokens", 0)
+        for node, emb in zip(candidates, embeddings):
+            node.embedding = emb
 
-            if iteration % MERGE_FREQUENCY == 0:
-                print("Merging similar nodes...")
-                tree.merge_similar_nodes()
+        # 3. Cluster semantically similar nodes
+        if len(candidates) > 1:
+            embeddings_array = np.array([c.embedding for c in candidates])
+            similarity_matrix = cosine_similarity(embeddings_array)
+            clustering = AgglomerativeClustering(n_clusters=None, affinity='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
+            labels = clustering.labels_
             
-            print("Pruning low-scoring nodes...")
-            tree.prune_nodes()
+            clusters_map = {}
+            for node, label in zip(candidates, labels):
+                if label not in clusters_map:
+                    clusters_map[label] = []
+                clusters_map[label].append(node)
+            
+            clusters = [Cluster(nodes) for nodes in clusters_map.values()]
+        else:
+            clusters = [Cluster(candidates)]
 
-            iteration += 1
+
+        # 4. Score representatives and apply diversity reward
+        if not clusters:
+            return False
+            
+        clusters.sort(key=lambda x: x.score, reverse=True)
+        leader = clusters[0]
+        
+        for cluster in clusters[1:]:
+            # Simple diversity reward: if not too similar to the leader
+            # This is a simplified interpretation of the README
+            leader_emb = np.array(leader.representative.embedding).reshape(1, -1)
+            cluster_emb = np.array(cluster.representative.embedding).reshape(1, -1)
+            if cosine_similarity(leader_emb, cluster_emb)[0][0] < (1 - DISTANCE):
+                 cluster.representative.diversity_reward += 0.1 # Placeholder reward
+            cluster.representative.update_score()
+
+        # 5. Keep top N clusters
+        top_clusters = clusters[:N]
+
+        # 6. Hybrid Pruning
+        leader_score = leader.score
+        depth = leader.representative.get_depth()
+        min_score_d = BETA + GAMMA * depth
+        pruning_threshold = max(ALPHA * leader_score, min_score_d)
+
+        self.beam = [c.representative for c in top_clusters if c.score >= pruning_threshold]
+
+        # 7. Check stopping criteria
+        if self.check_stopping_criteria():
+            return False
+            
+        return True
+
+    def check_stopping_criteria(self):
+        # 1. High-confidence terminal node
+        if any(n.is_leaf and n.score >= 0.9 for n in self.all_nodes):
+            return True
+        # 2. Terminal convergence
+        if len(self.terminal_nodes) > 1:
+            best_scores = sorted([n.score for n in self.terminal_nodes], reverse=True)
+            if best_scores[0] - best_scores[1] < DELTA:
+                return True
+        # 3. Max terminal nodes reached
+        if len(self.terminal_nodes) >= MAX_TERMINAL_NODES:
+            return True
+        # 4. Beam collapse (simplified)
+        if len(self.beam) <= 1:
+            # A more complete implementation would track this over L consecutive levels
+            pass
+        return False
+
+
+def worker(tree):
+    start_time = time.time()
+    
+    for i in range(20): # Max depth
+        if not tree.ssdp_step():
+            break
             
     tree.runtime_seconds = time.time() - start_time
     return tree
 
-def prepare_problem(instance, max_parallel_paths):
-    question = instance["question"]
-    answer = instance["answer"]
-    tree = SSDPTree(question, answer)
-    return (tree, max_parallel_paths)
-
-#### Main Execution ####
-def main():
-    """Main execution function."""
-    print("Loading dataset...")
-    
-    with open(DATA_PATH, "r") as f:
-        num_lines = sum(1 for line in f)
-
-    print(f"Found {num_lines} problems.")
-
-    processed_problems = []
-    
-    print("Starting SSDP search with multiprocessing...")
-    
-    with Pool(processes=os.cpu_count()) as pool:
-        with open(DATA_PATH, "r") as f:
-            problem_generator = (json.loads(line) for line in f)
-            worker_args = (prepare_problem(instance, MAX_PARALLEL_PATHS) for instance in problem_generator)
-
-            try:
-                for result in tqdm(pool.imap(ssdp_worker, worker_args), total=num_lines, desc="SSDP Search"):
-                    processed_problems.append(result)
-            except Exception as e:
-                print(f"An error occurred during multiprocessing: {e}")
-            finally:
-                pool.close()
-                pool.join()
-
-
-    print(f"Saving results to {output_fpath}")
-    with open(output_fpath, "wb") as f:
-        pickle.dump(processed_problems, f)
-
-    # Print summary statistics
-    if processed_problems:
-        print("\n=== SSDP Search Complete ===")
-        total_nodes = sum(len(p.all_nodes) for p in processed_problems)
-        total_expansions = sum(p.total_expansions for p in processed_problems)
-        total_merges = sum(p.total_merges for p in processed_problems)
-        total_prunes = sum(p.total_prunes for p in processed_problems)
-        total_runtime = sum(p.runtime_seconds for p in processed_problems)
-        total_prompt_tokens = sum(p.total_prompt_tokens for p in processed_problems)
-        total_completion_tokens = sum(p.total_completion_tokens for p in processed_problems)
-        total_tokens = sum(p.total_tokens for p in processed_problems)
-
-        print(f"Total nodes created: {total_nodes}")
-        print(f"Total expansions: {total_expansions}")
-        print(f"Total merges: {total_merges}")
-        print(f"Total prunes: {total_prunes}")
-        if len(processed_problems) > 0:
-            print(f"Average nodes per problem: {total_nodes / len(processed_problems):.1f}")
-        print(f"\n--- Metrics ---")
-        print(f"Total runtime: {total_runtime:.2f} seconds")
-        if len(processed_problems) > 0:
-            print(f"Average runtime per problem: {total_runtime / len(processed_problems):.2f} seconds")
-        print(f"Total prompt tokens: {total_prompt_tokens}")
-        print(f"Total completion tokens: {total_completion_tokens}")
-        print(f"Total tokens: {total_tokens}")
-
-
 if __name__ == "__main__":
-    main()
+    dataset = []
+    with open(data_fpath, "r") as f:
+        for line in f.readlines():
+            dataset.append(json.loads(line))
+
+    problems = []
+    for instance in dataset:
+        question = instance["question"]
+        answer = instance["answer"]
+        problem = Tree(question, answer)
+        problems.append(problem)
+
+    import multiprocessing
+    start_time = time.time()
+
+    pool = multiprocessing.Pool(1) # For debugging, use 1 process
+    problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))
+    pool.close()
+
+    total_runtime = time.time() - start_time
+    
+    # Aggregate metrics
+    total_prompt_tokens = sum([p.prompt_tokens for p in problems])
+    total_completion_tokens = sum([p.completion_tokens for p in problems])
+    total_tokens = sum([p.total_tokens for p in problems])
+    total_embedding_prompt_tokens = sum([p.embedding_prompt_tokens for p in problems])
+    total_embedding_completion_tokens = sum([p.embedding_completion_tokens for p in problems])
+    total_embedding_tokens = sum([p.embedding_total_tokens for p in problems])
+    total_all_tokens = total_tokens + total_embedding_tokens
+
+    final_data = {
+        'problems': problems,
+        'metrics': {
+            'total_runtime': total_runtime,
+            'policy_server': {
+                'total_prompt_tokens': total_prompt_tokens,
+                'total_completion_tokens': total_completion_tokens,
+                'total_tokens': total_tokens
+            },
+            'embedding_server': {
+                'total_prompt_tokens': total_embedding_prompt_tokens,
+                'total_completion_tokens': total_embedding_completion_tokens,
+                'total_tokens': total_embedding_tokens
+            },
+            'combined': {
+                'total_tokens': total_all_tokens,
+            }
+        }
+    }
+
+    with open(output_fpath, "wb") as f:
+        pickle.dump(final_data, f)
+
+    print(f"\n=== SSDP Search Complete ===")
+    print(f"Results saved to {output_fpath}")
+
+    print(f"\nRunning evaluation script on {output_fpath}...")
+    subprocess.run(["python", "search/SSDP/eval_search.py", output_fpath])
