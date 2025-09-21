@@ -11,6 +11,8 @@ import pickle
 import numpy as np
 import jsonlines
 from tqdm import tqdm
+import time
+from dotenv import load_dotenv
 
 LIMIT=50
 BUDGET=10
@@ -32,9 +34,18 @@ SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 CONTINUE = False
-data_fpath = "../../dataset/toy.jsonl" # path to the test set
-output_fpath = f"test_gsm8k_bfs_merge_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
-policy_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the policy model
+load_dotenv(dotenv_path='../experiments_config.env')
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None # path to the test set
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
+output_fpath = f"{dataset_type}_{dataset_name}_bfs_merge_b{BUDGET}_t{TEMPERATURE}.pkl"
+load_dotenv(dotenv_path='../../server_config.env')
+policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
 if __name__ == '__main__':
     
@@ -55,6 +66,8 @@ if __name__ == '__main__':
             problem.init_root_node(0)
             problems.append(problem)
         start = 0
+
+    start_time = time.time()
 
     for i in range(start, LIMIT):
         clusters = []
@@ -78,7 +91,19 @@ if __name__ == '__main__':
         if len(questions) == 0:
             break
 
-        next_steps, next_values = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages, verifier_usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        
+        # Aggregate token usage
+        for anchor_state, usage, verifier_usage in zip(anchors, usages, verifier_usages):
+            tree = anchor_state.tree
+            tree.prompt_tokens += usage.get("prompt_tokens", 0)
+            tree.completion_tokens += usage.get("completion_tokens", 0)
+            tree.total_tokens += usage.get("total_tokens", 0)
+            tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+            tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+            tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
+            # Note: embedding tokens are tracked in merge_nodes() method
+        
         for cluster, state, next_step, next_value in zip(clusters, anchors, next_steps, next_values):
             child = state.tree.add_node(next_step, next_value, state, i + 1, assert_end(next_step))
             cluster.cache.append(child)
@@ -87,8 +112,6 @@ if __name__ == '__main__':
         # merge similar states
         for cluster in tqdm(clusters, desc="merging"):
             cluster.merge_nodes()
-
-        pickle.dump(problems, open(output_fpath, "wb"))
             
 # if unfinish, select 1 node and extend to the end
 questions = []
@@ -108,10 +131,79 @@ if len(questions) != 0:
     print(f"iteration final")
     print(f"finished {finished} / {len(problems)}")
 
-    next_steps, next_values = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+    next_steps, next_values, usages, verifier_usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+    
+    # Aggregate token usage
+    for anchor_state, usage, verifier_usage in zip(anchors, usages, verifier_usages):
+        tree = anchor_state.tree
+        tree.prompt_tokens += usage.get("prompt_tokens", 0)
+        tree.completion_tokens += usage.get("completion_tokens", 0)
+        tree.total_tokens += usage.get("total_tokens", 0)
+        tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+        tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+        tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
+        # Note: embedding tokens are tracked in merge_nodes() method
+    
     for state, next_step, next_value in zip(anchors, next_steps, next_values):
         child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
         fix_value(child)
 
-    pickle.dump(problems, open(output_fpath, "wb"))
+# Calculate runtime and token totals
+total_runtime = time.time() - start_time
+total_prompt_tokens = sum([p.prompt_tokens for p in problems])
+total_completion_tokens = sum([p.completion_tokens for p in problems])
+total_tokens = sum([p.total_tokens for p in problems])
+total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
+total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
+total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
+total_embedding_prompt_tokens = sum([p.embedding_prompt_tokens for p in problems])
+total_embedding_completion_tokens = sum([p.embedding_completion_tokens for p in problems])
+total_embedding_tokens = sum([p.embedding_total_tokens for p in problems])
+total_all_tokens = total_tokens + total_verifier_tokens + total_embedding_tokens
+
+final_data = {
+    'problems': problems,
+    'metrics': {
+        'total_runtime': total_runtime,
+        'policy_server': {
+            'total_prompt_tokens': total_prompt_tokens,
+            'total_completion_tokens': total_completion_tokens,
+            'total_tokens': total_tokens
+        },
+        'verifier_server': {
+            'total_prompt_tokens': total_verifier_prompt_tokens,
+            'total_completion_tokens': total_verifier_completion_tokens,
+            'total_tokens': total_verifier_tokens
+        },
+        'embedding_server': {
+            'total_prompt_tokens': total_embedding_prompt_tokens,
+            'total_completion_tokens': total_embedding_completion_tokens,
+            'total_tokens': total_embedding_tokens
+        },
+        'combined': {
+            'total_tokens': total_all_tokens,
+            'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0,
+            'embedding_percentage': (total_embedding_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+        }
+    }
+}
+
+with open(output_fpath, "wb") as f:
+    pickle.dump(final_data, f)
+
+print("\n=== BFS Merge Complete ===")
+print(f"Total runtime: {total_runtime:.2f} seconds")
+print(f"\nPolicy Server Tokens:")
+print(f"  Total: {total_tokens}")
+print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
+print(f"\nVerifier Server Tokens:")
+print(f"  Total: {total_verifier_tokens}")
+print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+print(f"\nEmbedding Server Tokens:")
+print(f"  Total: {total_embedding_tokens}")
+print(f"  Prompt: {total_embedding_prompt_tokens}, Completion: {total_embedding_completion_tokens}")
+print(f"\nCombined Total: {total_all_tokens}")
+print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
+print(f"Embedding contribution: {total_embedding_tokens / total_all_tokens * 100:.1f}%")
+print(f"Results saved to {output_fpath}")
 

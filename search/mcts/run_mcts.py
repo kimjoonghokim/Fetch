@@ -59,25 +59,52 @@ if __name__ == '__main__':
 
     total_runtime = time.time() - start_time
 
+    # Policy server token totals
     total_prompt_tokens = sum([p.prompt_tokens for p in problems])
     total_completion_tokens = sum([p.completion_tokens for p in problems])
     total_tokens = sum([p.total_tokens for p in problems])
+
+    # Verifier server token totals
+    total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
+    total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
+    total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
+
+    # Combined totals
+    total_all_tokens = total_tokens + total_verifier_tokens
 
     final_data = {
         'problems': problems,
         'metrics': {
             'total_runtime': total_runtime,
-            'total_prompt_tokens': total_prompt_tokens,
-            'total_completion_tokens': total_completion_tokens,
-            'total_tokens': total_tokens
+            'policy_server': {
+                'total_prompt_tokens': total_prompt_tokens,
+                'total_completion_tokens': total_completion_tokens,
+                'total_tokens': total_tokens
+            },
+            'verifier_server': {
+                'total_prompt_tokens': total_verifier_prompt_tokens,
+                'total_completion_tokens': total_verifier_completion_tokens,
+                'total_tokens': total_verifier_tokens
+            },
+            'combined': {
+                'total_tokens': total_all_tokens,
+                'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+            }
         }
     }
     
     with open(output_fpath, "wb") as f:
         pickle.dump(final_data, f)
 
+    print("\n=== MCTS Search Complete ===")
     print(f"Total runtime: {total_runtime:.2f} seconds")
-    print(f"Total tokens: {total_tokens}")
-    print(f"  (Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens})")
+    print(f"\nPolicy Server Tokens:")
+    print(f"  Total: {total_tokens}")
+    print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
+    print(f"\nVerifier Server Tokens:")
+    print(f"  Total: {total_verifier_tokens}")
+    print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+    print(f"\nCombined Total: {total_all_tokens}")
+    print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
     print(f"Results saved to {output_fpath}")
 

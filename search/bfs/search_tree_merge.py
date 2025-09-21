@@ -3,10 +3,21 @@ from sklearn.cluster import AgglomerativeClustering
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
+from dotenv import load_dotenv
 
-model_fpath = "path/to/merge/model"
+load_dotenv(dotenv_path='../../server_config.env')
+model_fpath = os.getenv("EMBEDDING_MODEL_PATH", "path/to/merge/model")
 tokenizer = None
 model = None
+
+def call_esm(texts, distance=0.15):
+    import requests
+    url = "http://127.0.0.1:8003/predict"
+    pload ={"texts": texts, "d": distance}
+    response =requests.post(url, json=pload)
+    response_json = response.json()
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return response_json["labels"], usage
 
 def compute_emb(texts):
     inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
@@ -59,28 +70,23 @@ class VirtualNode:
         self.cache = []
         self.strategy = strategy
         self.d = d
+        self.is_leaf = self.nodes[0].is_leaf if self.nodes else False
     
     def merge_nodes(self):
-        global tokenizer, model
-        if tokenizer is None: # lazy loading
-            tokenizer = AutoTokenizer.from_pretrained(model_fpath)
-            model = AutoModel.from_pretrained(model_fpath).cuda()
-            model.eval()
         if self.cache:
             if len(self.cache) > 1:
                 contents = [child.content for child in self.cache]
-                embs = compute_emb(contents)
-                clustering = AgglomerativeClustering(n_clusters=None, metric="cosine", linkage="average", distance_threshold=self.d).fit(embs)
+                labels, usage = call_esm(contents, self.d)
+                self.tree.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
+                self.tree.embedding_completion_tokens += usage.get("completion_tokens", 0)
+                self.tree.embedding_total_tokens += usage.get("total_tokens", 0)
 
                 clusters = {}
-                for child, label in zip(self.cache, clustering.labels_):
+                for child, label in zip(self.cache, labels):
                     key = label
                     if key not in clusters:
                         clusters[key] = []
                     clusters[key].append(child)
-                # # print
-                # for k, v in clusters.items():
-                #     print(k, [_v.content for _v in v])
             else:
                 clusters = {0: [self.cache[0]]}
             for nodes in clusters.values():
@@ -97,6 +103,20 @@ class Tree:
         self.virtual_nodes = []
         self.root = None # wait init
         self.additional_info = additional_info
+        # Policy server token tracking
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
+        # Embedding server token tracking
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
+        # Runtime tracking
+        self.runtime_seconds = 0.0
 
     def init_root_node(self, value):
         self.root = Node(None, value, None, 0, self)
