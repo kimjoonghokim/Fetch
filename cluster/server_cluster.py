@@ -30,18 +30,16 @@ def compute_emb(texts):
         embeddings = F.normalize(embeddings, p=2, dim=1)
     return embeddings.cpu().numpy(), num_tokens
 
-def cluster(texts, d=0.5): #CHANGE THE d PARAMETER. HIGHER IT IS, LOOSER IT IS, LOWER = STRICTER (MERGE ONLY IF VERY SIMILAR)
+def cluster(texts, d=0.5):
     if not texts:
-        return [], 0
+        return [], [], 0
     
-    if len(texts) < 2:
-        inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=max_seq_length)
-        num_tokens = inputs['input_ids'].numel()
-        return [0] * len(texts), num_tokens
-
     embs, num_tokens = compute_emb(texts)
+    if len(texts) < 2:
+        return [0] * len(texts), embs.tolist(), num_tokens
+
     clustering = AgglomerativeClustering(n_clusters=None, metric="cosine", linkage="average", distance_threshold=d).fit(embs)
-    return clustering.labels_.tolist(), num_tokens
+    return clustering.labels_.tolist(), embs.tolist(), num_tokens
 
 app = FastAPI()
 
@@ -51,13 +49,14 @@ class InputText(BaseModel):
 
 class OutputPrediction(BaseModel):
     labels: List
+    embeddings: List
     usage: dict
 
 @app.post("/predict", response_model=OutputPrediction)
 async def predict(input_text: InputText):
-    labels, num_tokens = cluster(input_text.texts, input_text.d)
+    labels, embeddings, num_tokens = cluster(input_text.texts, input_text.d)
     usage = {"prompt_tokens": num_tokens, "completion_tokens": 0, "total_tokens": num_tokens}
-    return {"labels": labels, "usage": usage}
+    return {"labels": labels, "embeddings": embeddings, "usage": usage}
 
 @app.get("/health")
 async def health_check():

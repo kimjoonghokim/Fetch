@@ -8,7 +8,6 @@ from tqdm import tqdm
 import time
 from dotenv import load_dotenv
 import subprocess
-from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 
 # Load environment variables
@@ -81,8 +80,7 @@ def call_esm(texts):
     response =requests.post(url, json=pload)
     response_json = response.json()
     usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-    # we need the embeddings, not the labels
-    return response_json["embeddings"], usage
+    return response_json["labels"], response_json["embeddings"], usage
 
 class Node:
     def __init__(self, content, confidence, parent, timestep, tree, is_leaf=False):
@@ -165,7 +163,9 @@ class Tree:
         for node in self.beam:
             if node.is_leaf:
                 continue
-            for _ in range(B // len(self.beam)):
+            # Heuristic to expand more promising nodes
+            num_to_gen = max(1, int(B * node.score / sum(n.score for n in self.beam)))
+            for _ in range(num_to_gen):
                 path = node.print_path()
                 next_step, logprobs, usage = call_policy(self.question, path)
                 self.prompt_tokens += usage.get("prompt_tokens", 0)
@@ -186,32 +186,23 @@ class Tree:
         if not candidates:
             return False
 
-        # 2. Get embeddings for all candidates
+        # 2. Get embeddings and labels for all candidates
         texts = [c.content for c in candidates]
-        embeddings, usage = call_esm(texts)
+        labels, embeddings, usage = call_esm(texts)
         self.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
         self.embedding_completion_tokens += usage.get("completion_tokens", 0)
         self.embedding_total_tokens += usage.get("total_tokens", 0)
         for node, emb in zip(candidates, embeddings):
             node.embedding = emb
 
-        # 3. Cluster semantically similar nodes
-        if len(candidates) > 1:
-            embeddings_array = np.array([c.embedding for c in candidates])
-            similarity_matrix = cosine_similarity(embeddings_array)
-            clustering = AgglomerativeClustering(n_clusters=None, affinity='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
-            labels = clustering.labels_
-            
-            clusters_map = {}
-            for node, label in zip(candidates, labels):
-                if label not in clusters_map:
-                    clusters_map[label] = []
-                clusters_map[label].append(node)
-            
-            clusters = [Cluster(nodes) for nodes in clusters_map.values()]
-        else:
-            clusters = [Cluster(candidates)]
-
+        # 3. Cluster nodes based on labels from the server
+        clusters_map = {}
+        for node, label in zip(candidates, labels):
+            if label not in clusters_map:
+                clusters_map[label] = []
+            clusters_map[label].append(node)
+        
+        clusters = [Cluster(nodes) for nodes in clusters_map.values()]
 
         # 4. Score representatives and apply diversity reward
         if not clusters:
@@ -221,8 +212,6 @@ class Tree:
         leader = clusters[0]
         
         for cluster in clusters[1:]:
-            # Simple diversity reward: if not too similar to the leader
-            # This is a simplified interpretation of the README
             leader_emb = np.array(leader.representative.embedding).reshape(1, -1)
             cluster_emb = np.array(cluster.representative.embedding).reshape(1, -1)
             if cosine_similarity(leader_emb, cluster_emb)[0][0] < (1 - DISTANCE):
