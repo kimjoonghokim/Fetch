@@ -30,10 +30,10 @@ score(node) = confidence + similarity_bonus (intra-cluster) + diversity_reward (
 ```
 
 
-5. **Dynamic Beam Width (N)**  
-Beam width = number of clusters ≤ N.  
-If fewer than N clusters exist → beam narrows naturally.  
-Ensures the beam adapts to problem complexity.
+5. **Dynamic Window Width (N)**  
+Window width = number of clusters ≤ N.  
+If fewer than N clusters exist → window narrows naturally.  
+Ensures the window adapts to problem complexity.
 
 ---
 
@@ -54,7 +54,7 @@ Ensures the beam adapts to problem complexity.
 
 **Step 2: Apply hybrid pruning**
 
-keep node if score(node) >= max(α * leader_score, min_score(depth))
+keep node if score(node) >= max(α * leader_score, min_score(d))
 
 
 
@@ -70,7 +70,7 @@ Stop expanding if any of the following are met:
 1. High-confidence terminal node: score ≥ threshold (e.g., 0.9).  
 2. Terminal convergence: new terminals don’t improve best score by more than δ.  
 3. Max terminal nodes reached: e.g., 5–10.  
-4. Beam collapse: beam shrinks to 1 cluster for L consecutive levels.
+4. Window collapse: window shrinks to 1 cluster for L consecutive levels.
 
 ---
 
@@ -85,7 +85,7 @@ Stop expanding if any of the following are met:
 
 ## 🔹 Benefits
 
-- Adaptive exploration/exploitation: beam adjusts naturally.  
+- Adaptive exploration/exploitation: window adjusts naturally.  
 - Redundant path elimination: similarity-based merging reduces wasted compute.  
 - Dynamic pruning: hybrid threshold ensures efficient, depth-aware pruning.  
 - Flexible: works with any model that can provide confidence scores and embeddings.
@@ -105,5 +105,5 @@ Stop expanding if any of the following are met:
 ---
 
 ⚡ **In short:**  
-SSDP = *beam search with semantic clustering, dynamic scoring, diversity incentives, and depth-aware pruning*.  
-It efficiently explores reasoning paths, balances exploration/exploitation, and adapts to problem co
+SSDP = *tree search with semantic clustering, dynamic scoring, diversity incentives, and depth-aware pruning*.  
+It efficiently explores reasoning paths, balances exploration/exploitation, and adapts to problem complexity.

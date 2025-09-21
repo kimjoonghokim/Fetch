@@ -26,15 +26,15 @@ policy_fpath = os.getenv("POLICY_MODEL_PATH")
 
 # SSDP Parameters from README
 B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
-N = int(os.getenv("SSDP_N", 5))   # Dynamic Beam Width
-ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold
+N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
+ALPHA = float(os.getenv("SSDP_ALPHA", 0.9)) # Relative-to-leader threshold
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
 DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
 MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 5))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
-TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.8))
-DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.15))
+TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.6))
+DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
 
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
@@ -135,7 +135,7 @@ class Tree:
         self.root.update_score()
         self.all_nodes = [self.root]
         self.terminal_nodes = []
-        self.beam = [self.root]
+        self.window = [self.root]
         
         # Token tracking
         self.prompt_tokens = 0
@@ -155,16 +155,28 @@ class Tree:
         return node
 
     def ssdp_step(self):
-        if not self.beam:
+        if not self.window:
             return False # End of search
 
-        # 1. Generate B candidates for each node in the beam
+        # 1. Generate B candidates in total for the current window, proportionally to score
         candidates = []
-        for node in self.beam:
+        window_scores = [n.score for n in self.window]
+        total_window_score = sum(window_scores)
+
+        if total_window_score > 0:
+            allocations = [int(B * score / total_window_score) for score in window_scores]
+            remainder = B - sum(allocations)
+            for i in range(remainder):
+                allocations[i % len(allocations)] += 1
+        else:
+            allocations = [B // len(self.window)] * len(self.window)
+            remainder = B % len(self.window)
+            for i in range(remainder):
+                allocations[i] += 1
+
+        for node, num_to_gen in zip(self.window, allocations):
             if node.is_leaf:
                 continue
-            # Heuristic to expand more promising nodes
-            num_to_gen = max(1, int(B * node.score / sum(n.score for n in self.beam)))
             for _ in range(num_to_gen):
                 path = node.print_path()
                 next_step, logprobs, usage = call_policy(self.question, path)
@@ -227,7 +239,7 @@ class Tree:
         min_score_d = BETA + GAMMA * depth
         pruning_threshold = max(ALPHA * leader_score, min_score_d)
 
-        self.beam = [c.representative for c in top_clusters if c.score >= pruning_threshold]
+        self.window = [c.representative for c in top_clusters if c.score >= pruning_threshold]
 
         # 7. Check stopping criteria
         if self.check_stopping_criteria():
@@ -247,8 +259,8 @@ class Tree:
         # 3. Max terminal nodes reached
         if len(self.terminal_nodes) >= MAX_TERMINAL_NODES:
             return True
-        # 4. Beam collapse (simplified)
-        if len(self.beam) <= 1:
+        # 4. Window collapse (simplified)
+        if len(self.window) <= 1:
             # A more complete implementation would track this over L consecutive levels
             pass
         return False
