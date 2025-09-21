@@ -3,16 +3,74 @@ import sys
 import re
 import numpy as np
 
+# Class definitions from ssdp.py
+class Node:
+    def __init__(self, content, confidence, parent, timestep, tree, is_leaf=False):
+        self.content = content
+        self.confidence = confidence
+        self.parent = parent
+        self.children = []
+        self.timestep = timestep
+        self.tree = tree
+        self.is_leaf = is_leaf
+        self.embedding = None
+        self.similarity_bonus = 0
+        self.diversity_reward = 0
+        self.parent_score = parent.score if parent else 0
+        self.score = 0
+
+    def get_depth(self):
+        return len(self.return_path()) + 1
+
+    def return_path(self):
+        if self.content is None:
+            return []
+        if self.parent is None:
+            return [self.content]
+        return self.parent.return_path() + [self.content]
+
+    def print_path(self):
+        return "".join(self.return_path())
+
+    def update_score(self):
+        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
+
+class Cluster:
+    def __init__(self, nodes):
+        self.nodes = sorted(nodes, key=lambda x: x.confidence, reverse=True)
+        self.representative = self.nodes[0]
+        self.similarity_bonus = sum(n.confidence for n in self.nodes[1:])
+        self.representative.similarity_bonus = self.similarity_bonus
+        self.representative.update_score()
+
+    @property
+    def score(self):
+        return self.representative.score
+
+class Tree:
+    def __init__(self, question, answer):
+        self.question = question
+        self.answer = answer
+        self.root = Node(None, 1.0, None, 0, self)
+        self.root.update_score()
+        self.all_nodes = [self.root]
+        self.terminal_nodes = []
+        self.beam = [self.root]
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
+        self.runtime_seconds = 0.0
+
 def extract_answer(text):
     # Robustly extract the answer, handling different formats
-    # Look for "The answer is", then try to find a number
     match = re.search(r'The answer is (.*?)(?:\n|$)', text)
     if match:
-        # Extract the first number found after "The answer is"
         num_match = re.search(r'-?\d+\.?\d*|-\.\d+', match.group(1))
         if num_match:
             return num_match.group(0)
-    # Fallback: find the last number in the string
     all_numbers = re.findall(r'-?\d+\.?\d*|-\.\d+', text)
     if all_numbers:
         return all_numbers[-1]
@@ -22,7 +80,6 @@ def is_correct(generated_answer, true_answer):
     if generated_answer is None or true_answer is None:
         return False
     try:
-        # Compare as floating point numbers
         return abs(float(generated_answer) - float(true_answer)) < 1e-3
     except (ValueError, TypeError):
         return False

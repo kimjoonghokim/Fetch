@@ -280,7 +280,7 @@ if __name__ == "__main__":
     import multiprocessing
     start_time = time.time()
 
-    pool = multiprocessing.Pool(1) # For debugging, use 1 process
+    pool = multiprocessing.Pool(80)
     problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))
     pool.close()
 
@@ -322,4 +322,4 @@ if __name__ == "__main__":
     print(f"Results saved to {output_fpath}")
 
     print(f"\nRunning evaluation script on {output_fpath}...")
-    subprocess.run(["python", "search/SSDP/eval_search.py", output_fpath])
+    subprocess.run(["python", "eval_search.py", output_fpath])
