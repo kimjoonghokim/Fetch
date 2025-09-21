@@ -158,8 +158,11 @@ class MCTSTree:
         _actions = []
         while len(_actions) < node_budget:
             _node = node.sub_nodes[len(_actions) % len(node.sub_nodes)] # seq find next node
-            _action = self.config.get_next_step(self.question, _node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, _node.return_path(), False)
-            _new_child_node = MCTSNode(_action, _node, timestep, is_leaf = self.config.is_terminal(_action), p = self.config.prior(_action) if not to_end else (1 if self.config.is_terminal(_action) else 0))
+            _action_content, _action_usage = self.config.get_next_step(self.question, _node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, _node.return_path(), False)
+            self.prompt_tokens += _action_usage['prompt_tokens']
+            self.completion_tokens += _action_usage['completion_tokens']
+            self.total_tokens += _action_usage['total_tokens']
+            _new_child_node = MCTSNode(_action_content, _node, timestep, is_leaf = self.config.is_terminal(_action_content), p = self.config.prior(_action_content) if not to_end else (1 if self.config.is_terminal(_action_content) else 0))
             if _new_child_node.p > 0:
                 _actions.append(_new_child_node)
             self.all_nodes.append(_new_child_node)

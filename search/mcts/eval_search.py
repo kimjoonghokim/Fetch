@@ -88,7 +88,14 @@ def main(results_file_path):
 
     # --- Print Human-Readable Results ---
     print("\n" + "="*30)
-    print("    MCTS Search Evaluation     ")
+    # Detect if this is a merge file (has embedding tokens)
+    is_merge = False
+    if 'policy_server' in metrics and 'verifier_server' in metrics:
+        embedding_metrics = metrics.get('embedding_server', {'total_tokens': 0})
+        is_merge = embedding_metrics.get('total_tokens', 0) > 0
+    
+    title = "    MCTS Merge Search Evaluation     " if is_merge else "    MCTS Search Evaluation     "
+    print(title)
     print("="*30 + "\n")
 
     # Accuracy Metrics
@@ -141,8 +148,6 @@ def main(results_file_path):
         verifier_percentage = combined_metrics.get('verifier_percentage', 0)
         embedding_percentage = combined_metrics.get('embedding_percentage', 0)
         
-        # Detect if this is a merge file
-        is_merge = embedding_tokens > 0
         
         print("--- Token Usage ---")
         print(f"Total Tokens Used:   {total_tokens}")
