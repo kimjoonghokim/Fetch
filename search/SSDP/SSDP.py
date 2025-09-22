@@ -31,7 +31,7 @@ ALPHA = float(os.getenv("SSDP_ALPHA", 0.9)) # Relative-to-leader threshold
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
 DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
-MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 5))
+MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 50))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
 TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.6))
 DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
@@ -252,9 +252,9 @@ class Tree:
         return True
 
     def check_stopping_criteria(self):
-        # 1. High-confidence terminal node
-        if any(n.is_leaf and n.score >= 0.9 for n in self.all_nodes):
-            return True
+        # 1. High-confidence terminal node (Commented out as it can be too aggressive)
+        # if any(n.is_leaf and n.score >= 0.9 for n in self.all_nodes):
+        #     return True
         # 2. Terminal convergence
         if len(self.terminal_nodes) > 1:
             best_scores = sorted([n.score for n in self.terminal_nodes], reverse=True)
