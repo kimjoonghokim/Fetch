@@ -33,8 +33,16 @@ SEQ_STOP_TOKENS = []
 STEP_STOP_TOKENS = ["\n"]
 
 CONTINUE = False
-data_fpath = "xmu-nlp/Llama-3-8b-gsm8k" # path to the test set
-output_fpath = f"test_gsm8k_bfs_b{BUDGET}_t{TEMPERATURE}.pkl" # path to the output file
+load_dotenv(dotenv_path='../experiments_config.env')
+data_fpath_var = os.getenv("PATH_TO_DATASET")
+data_fpath = os.getenv(data_fpath_var) if data_fpath_var else None # path to the test set
+if data_fpath:
+    dataset_type = os.path.basename(data_fpath).split('.')[0]
+    dataset_name = os.path.basename(os.path.dirname(data_fpath))
+else:
+    dataset_name = "unknown"
+    dataset_type = "unknown"
+output_fpath = f"{dataset_type}_{dataset_name}_bfs_b{BUDGET}_t{TEMPERATURE}.pkl"
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
@@ -83,14 +91,17 @@ if __name__ == '__main__':
         if len(questions) == 0:
             break
 
-        next_steps, next_values, usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages, verifier_usages = call(questions, paths, [TEMPERATURE] * len(questions), [STEP_STOP_TOKENS] * len(questions))
         
         # Aggregate token usage
-        for anchor_state, usage in zip(anchors, usages):
+        for anchor_state, usage, verifier_usage in zip(anchors, usages, verifier_usages):
             tree = anchor_state.tree
             tree.prompt_tokens += usage.get("prompt_tokens", 0)
             tree.completion_tokens += usage.get("completion_tokens", 0)
             tree.total_tokens += usage.get("total_tokens", 0)
+            tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+            tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+            tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
 
         for state, next_step, next_value in zip(anchors, next_steps, next_values):
             child = state.tree.add_node(next_step, next_value, state, i + 1, assert_end(next_step))
@@ -114,14 +125,17 @@ if __name__ == '__main__':
         print(f"iteration final")
         print(f"finished {finished} / {len(problems)}")
 
-        next_steps, next_values, usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
+        next_steps, next_values, usages, verifier_usages = call(questions, paths, [0] * len(questions), [SEQ_STOP_TOKENS] * len(questions))
         
         # Aggregate token usage
-        for anchor_state, usage in zip(anchors, usages):
+        for anchor_state, usage, verifier_usage in zip(anchors, usages, verifier_usages):
             tree = anchor_state.tree
             tree.prompt_tokens += usage.get("prompt_tokens", 0)
             tree.completion_tokens += usage.get("completion_tokens", 0)
             tree.total_tokens += usage.get("total_tokens", 0)
+            tree.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+            tree.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+            tree.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
 
         for state, next_step, next_value in zip(anchors, next_steps, next_values):
             child = state.tree.add_node(next_step, next_value, state, LIMIT + 1, assert_end(next_step))
@@ -129,14 +143,38 @@ if __name__ == '__main__':
 
     total_runtime = time.time() - start_time
     
+    # Policy server token totals
+    total_prompt_tokens = sum([p.prompt_tokens for p in problems])
+    total_completion_tokens = sum([p.completion_tokens for p in problems])
+    total_tokens = sum([p.total_tokens for p in problems])
+
+    # Verifier server token totals
+    total_verifier_prompt_tokens = sum([p.verifier_prompt_tokens for p in problems])
+    total_verifier_completion_tokens = sum([p.verifier_completion_tokens for p in problems])
+    total_verifier_tokens = sum([p.verifier_total_tokens for p in problems])
+
+    # Combined totals
+    total_all_tokens = total_tokens + total_verifier_tokens
+
     # Final save
     final_data = {
         'problems': problems,
         'metrics': {
             'total_runtime': total_runtime,
-            'total_prompt_tokens': sum(p.prompt_tokens for p in problems),
-            'total_completion_tokens': sum(p.completion_tokens for p in problems),
-            'total_tokens': sum(p.total_tokens for p in problems)
+            'policy_server': {
+                'total_prompt_tokens': total_prompt_tokens,
+                'total_completion_tokens': total_completion_tokens,
+                'total_tokens': total_tokens
+            },
+            'verifier_server': {
+                'total_prompt_tokens': total_verifier_prompt_tokens,
+                'total_completion_tokens': total_verifier_completion_tokens,
+                'total_tokens': total_verifier_tokens
+            },
+            'combined': {
+                'total_tokens': total_all_tokens,
+                'verifier_percentage': (total_verifier_tokens / total_all_tokens * 100) if total_all_tokens > 0 else 0
+            }
         }
     }
     
@@ -145,6 +183,12 @@ if __name__ == '__main__':
 
     print("\n=== BFS Search Complete ===")
     print(f"Total runtime: {total_runtime:.2f} seconds")
-    print(f"Total tokens: {final_data['metrics']['total_tokens']}")
-    print(f"  (Prompt: {final_data['metrics']['total_prompt_tokens']}, Completion: {final_data['metrics']['total_completion_tokens']})")
+    print(f"\nPolicy Server Tokens:")
+    print(f"  Total: {total_tokens}")
+    print(f"  Prompt: {total_prompt_tokens}, Completion: {total_completion_tokens}")
+    print(f"\nVerifier Server Tokens:")
+    print(f"  Total: {total_verifier_tokens}")
+    print(f"  Prompt: {total_verifier_prompt_tokens}, Completion: {total_verifier_completion_tokens}")
+    print(f"\nCombined Total: {total_all_tokens}")
+    print(f"Verifier contribution: {total_verifier_tokens / total_all_tokens * 100:.1f}%")
     print(f"Results saved to {output_fpath}")

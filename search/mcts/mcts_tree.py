@@ -51,9 +51,16 @@ class MCTSTree:
         self.all_nodes = []
         self.config = config
         self.root = self.init_root_node() # wait init
+        # Policy server token tracking
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
+        # Runtime tracking
+        self.runtime_seconds = 0.0
 
     def init_root_node(self):
         root = MCTSNode(None, None, 0, False, p=1)
@@ -155,7 +162,10 @@ class MCTSTree:
             if need_expand:
                 new_node = self.mcts_expand(selected_node, timestep)
                 if new_node.value < 0:
-                    new_node.value = self.config.get_value(self.question, new_node.return_path())
+                    new_node.value, verifier_usage = self.config.get_value(self.question, new_node.return_path())
+                    self.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+                    self.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+                    self.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
                 if new_node.is_leaf:
                     rollouts = []
                     n_terminals += 1

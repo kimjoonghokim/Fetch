@@ -88,7 +88,14 @@ def main(results_file_path):
 
     # --- Print Human-Readable Results ---
     print("\n" + "="*30)
-    print("    MCTS Search Evaluation     ")
+    # Detect if this is a merge file (has embedding tokens)
+    is_merge = False
+    if 'policy_server' in metrics and 'verifier_server' in metrics:
+        embedding_metrics = metrics.get('embedding_server', {'total_tokens': 0})
+        is_merge = embedding_metrics.get('total_tokens', 0) > 0
+    
+    title = "    MCTS Merge Search Evaluation     " if is_merge else "    MCTS Search Evaluation     "
+    print(title)
     print("="*30 + "\n")
 
     # Accuracy Metrics
@@ -119,16 +126,64 @@ def main(results_file_path):
     print("-" * 30)
 
     # Token Usage Metrics
-    total_tokens = metrics.get('total_tokens', 0)
-    prompt_tokens = metrics.get('total_prompt_tokens', 0)
-    completion_tokens = metrics.get('total_completion_tokens', 0)
-    avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
+    if 'policy_server' in metrics and 'verifier_server' in metrics:
+        policy_metrics = metrics['policy_server']
+        verifier_metrics = metrics['verifier_server']
+        embedding_metrics = metrics.get('embedding_server', {'total_tokens': 0, 'total_prompt_tokens': 0, 'total_completion_tokens': 0})
+        combined_metrics = metrics.get('combined', {})
+        
+        policy_tokens = policy_metrics.get('total_tokens', 0)
+        policy_prompt = policy_metrics.get('total_prompt_tokens', 0)
+        policy_completion = policy_metrics.get('total_completion_tokens', 0)
+        
+        verifier_tokens = verifier_metrics.get('total_tokens', 0)
+        verifier_prompt = verifier_metrics.get('total_prompt_tokens', 0)
+        verifier_completion = verifier_metrics.get('total_completion_tokens', 0)
+        
+        embedding_tokens = embedding_metrics.get('total_tokens', 0)
+        embedding_prompt = embedding_metrics.get('total_prompt_tokens', 0)
+        embedding_completion = embedding_metrics.get('total_completion_tokens', 0)
+        
+        total_tokens = combined_metrics.get('total_tokens', policy_tokens + verifier_tokens + embedding_tokens)
+        verifier_percentage = combined_metrics.get('verifier_percentage', 0)
+        embedding_percentage = combined_metrics.get('embedding_percentage', 0)
+        
+        
+        print("--- Token Usage ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"")
+        print(f"Policy Server:")
+        print(f"  - Total Tokens:    {policy_tokens}")
+        print(f"  - Prompt Tokens:   {policy_prompt}")
+        print(f"  - Completion Tokens: {policy_completion}")
+        print(f"")
+        print(f"Verifier Server:")
+        print(f"  - Total Tokens:    {verifier_tokens}")
+        print(f"  - Prompt Tokens:   {verifier_prompt}")
+        print(f"  - Completion Tokens: {verifier_completion}")
+        if is_merge:
+            print(f"")
+            print(f"Embedding Server:")
+            print(f"  - Total Tokens:    {embedding_tokens}")
+            print(f"  - Prompt Tokens:   {embedding_prompt}")
+            print(f"  - Completion Tokens: {embedding_completion}")
+        print(f"")
+        print(f"Verifier Contribution: {verifier_percentage:.1f}%")
+        if is_merge and embedding_tokens > 0:
+            print(f"Embedding Contribution: {embedding_percentage:.1f}%")
+        print(f"Average per Problem: {total_tokens / total_problems:.2f} tokens")
+    else:
+        # Fallback for old format
+        total_tokens = metrics.get('total_tokens', 0)
+        prompt_tokens = metrics.get('total_prompt_tokens', 0)
+        completion_tokens = metrics.get('total_completion_tokens', 0)
+        avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
 
-    print("--- Token Usage ---")
-    print(f"Total Tokens Used:   {total_tokens}")
-    print(f"  - Prompt Tokens:   {prompt_tokens}")
-    print(f"  - Completion Tokens: {completion_tokens}")
-    print(f"Average per Problem: {avg_tokens:.2f} tokens")
+        print("--- Token Usage ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"  - Prompt Tokens:   {prompt_tokens}")
+        print(f"  - Completion Tokens: {completion_tokens}")
+        print(f"Average per Problem: {avg_tokens:.2f} tokens")
     print("="*30)
 
 if __name__ == '__main__':

@@ -94,12 +94,15 @@ class GSMConfig:
     def call_value(self, pload):
         try:
             response = requests.post(self.value_url, json=pload)
-            value = response.json()["values"][0]
+            response_json = response.json()
+            value = response_json["values"][0]
             value = (max(min(value, 1), -1) + 1) / 2 # normalize
+            usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         except Exception as e:
             print("Value Server Error", e, response.content)
             value = 0 # usually because oom
-        return value
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return value, usage
 
     def extract_first_step(self, rollout):
         steps = rollout.split("\n")
@@ -136,13 +139,16 @@ class GSMConfig:
             pload = {"texts": [query]}
             return self.call_value(pload)
         else:
-            return 0.
+            return 0., {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def is_terminal(self, answer):
         return assert_end(answer)
     
     def compute_reward(self, question, steps, rollouts):
-        rollout_values = [self.get_value(question, steps + [rollout]) for rollout in rollouts]
+        rollout_values = []
+        for rollout in rollouts:
+            value, usage = self.get_value(question, steps + [rollout])
+            rollout_values.append(value)
         new_rollouts = [{"text": rollout, "value": rollout_value} for rollout, rollout_value in zip(rollouts, rollout_values)]
         return new_rollouts
 
@@ -164,4 +170,7 @@ class GSMConfig:
     def cluster(self, texts):
         pload = {"texts": texts, "d": self.d}
         result = requests.post(self.merge_url, json=pload)
-        return result.json()["labels"]
+        response_json = result.json()
+        labels = response_json["labels"]
+        usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        return labels, usage

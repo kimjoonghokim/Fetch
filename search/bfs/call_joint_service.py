@@ -55,6 +55,7 @@ class Worker(object):
     def encode(self, question, path, temp=1.0, stop=[]):
         headers ={"User-Agent":"Test Client"}
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        verifier_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         if temp is not None: # None, only call value
             query = wrap_query_for_policy(question, path)
@@ -69,7 +70,7 @@ class Worker(object):
                 usage = response_json.get("usage", usage)
             except Exception as e:
                 print("Policy Server Error", e, response.content)
-                return "", 0, usage # usually because over-length
+                return "", 0, usage, verifier_usage # usually because over-length
         else:
             next_step = ""
 
@@ -80,11 +81,12 @@ class Worker(object):
         
         try:
             value = (min(max(response.json()["values"][0], -1.), 1.) + 1.) / 2
+            verifier_usage = response.json().get("usage", verifier_usage)
         except Exception as e:
             print("Value Server Error", e, response.content)
-            return "", 0, usage # usually because oom
+            return "", 0, usage, verifier_usage # usually because oom
 
-        return next_step, value, usage
+        return next_step, value, usage, verifier_usage
 
 
 def call(questions, paths, temperatures, stops):
@@ -93,5 +95,5 @@ def call(questions, paths, temperatures, stops):
     worker = Worker(policy_args, value_args)
     pool = multiprocessing.Pool(80)
     model_outputs = list(tqdm(pool.imap(worker.encode_wrapper, [(a, b, c, d) for a, b, c, d in zip(questions, paths, temperatures, stops)], 4), total=len(questions)))
-    next_steps, values, usages = zip(*model_outputs)
-    return next_steps, values, usages
+    next_steps, values, usages, verifier_usages = zip(*model_outputs)
+    return next_steps, values, usages, verifier_usages

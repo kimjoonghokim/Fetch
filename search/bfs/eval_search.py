@@ -61,13 +61,27 @@ def main(results_file_path):
     correct_solutions = 0
     unfinished_problems = 0
 
+    # Detect if this is a merge file or regular BFS
+    is_merge = hasattr(problems[0], 'virtual_nodes') if problems else False
+
     for problem in problems:
         gold_answer = extract_gold_answer(problem.answer)
         
-        leaf_nodes = [node for node in problem.all_nodes if node.is_leaf]
-        
-        if leaf_nodes:
-            best_node = max(leaf_nodes, key=lambda x: x.value)
+        best_node = None
+        if is_merge:
+            # It's from bfs_merge.py - check virtual_nodes
+            leaf_nodes = [node for node in problem.virtual_nodes if node.is_leaf]
+            if leaf_nodes:
+                best_virtual_node = max(leaf_nodes, key=lambda x: x.value)
+                if best_virtual_node.nodes:
+                    best_node = best_virtual_node.nodes[0]
+        else:
+            # It's from bfs.py - check all_nodes
+            leaf_nodes = [node for node in problem.all_nodes if node.is_leaf]
+            if leaf_nodes:
+                best_node = max(leaf_nodes, key=lambda x: x.value)
+
+        if best_node:
             predicted_answer = extract_pred_answer(best_node.content)
             if are_answers_equal(predicted_answer, gold_answer):
                 correct_solutions += 1
@@ -76,7 +90,10 @@ def main(results_file_path):
 
     # --- Print Human-Readable Results ---
     print("\n" + "="*30)
-    print("    BFS Search Evaluation     ")
+    if is_merge:
+        print("    BFS Merge Evaluation     ")
+    else:
+        print("    BFS Search Evaluation     ")
     print("="*30 + "\n")
 
     # Accuracy Metrics
@@ -101,16 +118,65 @@ def main(results_file_path):
     print("-" * 30)
 
     # Token Usage Metrics
-    total_tokens = metrics.get('total_tokens', 0)
-    prompt_tokens = metrics.get('total_prompt_tokens', 0)
-    completion_tokens = metrics.get('total_completion_tokens', 0)
-    avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
+    if 'policy_server' in metrics and 'verifier_server' in metrics:
+        policy_metrics = metrics['policy_server']
+        verifier_metrics = metrics['verifier_server']
+        embedding_metrics = metrics.get('embedding_server', {'total_tokens': 0, 'total_prompt_tokens': 0, 'total_completion_tokens': 0})
+        combined_metrics = metrics.get('combined', {})
+        
+        policy_tokens = policy_metrics.get('total_tokens', 0)
+        policy_prompt = policy_metrics.get('total_prompt_tokens', 0)
+        policy_completion = policy_metrics.get('total_completion_tokens', 0)
+        
+        verifier_tokens = verifier_metrics.get('total_tokens', 0)
+        verifier_prompt = verifier_metrics.get('total_prompt_tokens', 0)
+        verifier_completion = verifier_metrics.get('total_completion_tokens', 0)
 
-    print("--- Token Usage ---")
-    print(f"Total Tokens Used:   {total_tokens}")
-    print(f"  - Prompt Tokens:   {prompt_tokens}")
-    print(f"  - Completion Tokens: {completion_tokens}")
-    print(f"Average per Problem: {avg_tokens:.2f} tokens")
+        embedding_tokens = embedding_metrics.get('total_tokens', 0)
+        embedding_prompt = embedding_metrics.get('total_prompt_tokens', 0)
+        embedding_completion = embedding_metrics.get('total_completion_tokens', 0)
+        
+        total_tokens = combined_metrics.get('total_tokens', policy_tokens + verifier_tokens + embedding_tokens)
+        verifier_percentage = combined_metrics.get('verifier_percentage', 0)
+        embedding_percentage = combined_metrics.get('embedding_percentage', 0)
+
+        print("--- Token Usage ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"")
+        print(f"Policy Server:")
+        print(f"  - Total Tokens:    {policy_tokens}")
+        print(f"  - Prompt Tokens:   {policy_prompt}")
+        print(f"  - Completion Tokens: {policy_completion}")
+        print(f"")
+        print(f"Verifier Server:")
+        print(f"  - Total Tokens:    {verifier_tokens}")
+        print(f"  - Prompt Tokens:   {verifier_prompt}")
+        print(f"  - Completion Tokens: {verifier_completion}")
+        if is_merge:
+            print(f"")
+            print(f"Embedding Server:")
+            print(f"  - Total Tokens:    {embedding_tokens}")
+            print(f"  - Prompt Tokens:   {embedding_prompt}")
+            print(f"  - Completion Tokens: {embedding_completion}")
+        print(f"")
+        print(f"Verifier Contribution: {verifier_percentage:.1f}%")
+        if is_merge and embedding_tokens > 0:
+            print(f"Embedding Contribution: {embedding_percentage:.1f}%")
+        print(f"Average per Problem: {total_tokens / total_problems:.2f} tokens")
+        
+    else:
+        # Fallback for old format
+        total_tokens = metrics.get('total_tokens', 0)
+        prompt_tokens = metrics.get('total_prompt_tokens', 0)
+        completion_tokens = metrics.get('total_completion_tokens', 0)
+        avg_tokens = total_tokens / total_problems if total_problems > 0 else 0
+
+        print("--- Token Usage (Legacy Format) ---")
+        print(f"Total Tokens Used:   {total_tokens}")
+        print(f"  - Prompt Tokens:   {prompt_tokens}")
+        print(f"  - Completion Tokens: {completion_tokens}")
+        print(f"Average per Problem: {avg_tokens:.2f} tokens")
+    
     print("="*30)
 
 if __name__ == '__main__':

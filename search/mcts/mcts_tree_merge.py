@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import time
 
 DEBUG = False
 
@@ -83,6 +84,20 @@ class MCTSTree:
         self.all_virtual_nodes = []
         self.config = config
         self.root = self.init_root_node() # wait init
+        # Policy server token tracking
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        # Verifier server token tracking
+        self.verifier_prompt_tokens = 0
+        self.verifier_completion_tokens = 0
+        self.verifier_total_tokens = 0
+        # Embedding server token tracking
+        self.embedding_prompt_tokens = 0
+        self.embedding_completion_tokens = 0
+        self.embedding_total_tokens = 0
+        # Runtime tracking
+        self.runtime_seconds = 0.0
 
     def init_root_node(self):
         root = MCTSNode(None, None, 0, False, p=1)
@@ -143,8 +158,11 @@ class MCTSTree:
         _actions = []
         while len(_actions) < node_budget:
             _node = node.sub_nodes[len(_actions) % len(node.sub_nodes)] # seq find next node
-            _action = self.config.get_next_step(self.question, _node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, _node.return_path(), False)
-            _new_child_node = MCTSNode(_action, _node, timestep, is_leaf = self.config.is_terminal(_action), p = self.config.prior(_action) if not to_end else (1 if self.config.is_terminal(_action) else 0))
+            _action_content, _action_usage = self.config.get_next_step(self.question, _node.return_path(), False) if not to_end else self.config.get_full_traj(self.question, _node.return_path(), False)
+            self.prompt_tokens += _action_usage['prompt_tokens']
+            self.completion_tokens += _action_usage['completion_tokens']
+            self.total_tokens += _action_usage['total_tokens']
+            _new_child_node = MCTSNode(_action_content, _node, timestep, is_leaf = self.config.is_terminal(_action_content), p = self.config.prior(_action_content) if not to_end else (1 if self.config.is_terminal(_action_content) else 0))
             if _new_child_node.p > 0:
                 _actions.append(_new_child_node)
             self.all_nodes.append(_new_child_node)
@@ -153,9 +171,15 @@ class MCTSTree:
         
         # merge
         for _action in _actions:
-            _action.value = self.config.get_value(self.question, _action.return_path())
+            _action.value, verifier_usage = self.config.get_value(self.question, _action.return_path())
+            self.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+            self.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+            self.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
         texts = [_action.content for _action in _actions]
-        labels = self.config.cluster(texts)
+        labels, embedding_usage = self.config.cluster(texts)
+        self.embedding_prompt_tokens += embedding_usage.get("prompt_tokens", 0)
+        self.embedding_completion_tokens += embedding_usage.get("completion_tokens", 0)
+        self.embedding_total_tokens += embedding_usage.get("total_tokens", 0)
         clusters = {}
         for _action, label in zip(_actions, labels):
             if label not in clusters:
@@ -184,8 +208,14 @@ class MCTSTree:
         rollouts = []
         for i in range(self.config.n_rollouts):
             _node = node.sub_nodes[i % len(node.sub_nodes)] # need exp
-            rollout = self.config.get_full_traj(self.question, _node.return_path())
-            value = self.config.get_value(self.question, _node.return_path() + [rollout])
+            rollout, usage = self.config.get_full_traj(self.question, _node.return_path())
+            self.prompt_tokens += usage['prompt_tokens']
+            self.completion_tokens += usage['completion_tokens']
+            self.total_tokens += usage['total_tokens']
+            value, verifier_usage = self.config.get_value(self.question, _node.return_path() + [rollout])
+            self.verifier_prompt_tokens += verifier_usage.get("prompt_tokens", 0)
+            self.verifier_completion_tokens += verifier_usage.get("completion_tokens", 0)
+            self.verifier_total_tokens += verifier_usage.get("total_tokens", 0)
             rollout = {"text": rollout, "value": value}
             _node.rollouts.append(rollout)
             rollouts.append(rollout)
@@ -200,6 +230,7 @@ class MCTSTree:
             curr_node = curr_node.parent
 
     def run_mcts(self):
+        start_time = time.time()
         timestep, n_terminals = 0, 0
         while (timestep < self.config.min_search_time or n_terminals < self.config.min_terminals) and timestep < self.config.max_search_time:
             timestep += 1
@@ -222,3 +253,4 @@ class MCTSTree:
             else: # is terminal
                 self.mcts_backpropagate(selected_node, selected_node.rewards[0]) # directly backprop
                 n_terminals += 0.1 # trick, may remove in future
+        self.runtime_seconds = time.time() - start_time
