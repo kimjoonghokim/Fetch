@@ -35,6 +35,8 @@ MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 5))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
 TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.6))
 DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
+INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.2))
+DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.9))
 
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
@@ -227,7 +229,9 @@ class Tree:
             leader_emb = np.array(leader.representative.embedding).reshape(1, -1)
             cluster_emb = np.array(cluster.representative.embedding).reshape(1, -1)
             if cosine_similarity(leader_emb, cluster_emb)[0][0] < (1 - DISTANCE):
-                 cluster.representative.diversity_reward += 0.1 # Placeholder reward
+                depth = cluster.representative.get_depth()
+                decaying_reward = INITIAL_DIVERSITY_REWARD * (DIVERSITY_DECAY_FACTOR ** depth)
+                cluster.representative.diversity_reward += decaying_reward
             cluster.representative.update_score()
 
         # 5. Keep top N clusters

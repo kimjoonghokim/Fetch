@@ -19,8 +19,10 @@ Merge each cluster into a representative node:
 
 3. **Leader Node & Diversity Reward (Inter-Cluster)**  
 Leader = highest-scoring cluster representative.  
-Other clusters sufficiently different from leader receive a diversity reward.  
-Diversity reward decays with depth: strong early, weaker deeper.
+Other clusters sufficiently different from the leader receive a diversity reward. The reward decays with depth to encourage exploration early on and exploitation in later stages.
+
+The reward is calculated using an exponential decay:
+`reward = initial_reward * (decay_factor ** depth)`
 
 4. **Node Scoring Function**  
 
