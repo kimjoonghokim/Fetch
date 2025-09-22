@@ -25,8 +25,8 @@ load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH")
 
 # SSDP Parameters from README
-B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
-N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
+B = int(os.getenv("SSDP_B", 25))  # Batch Expansion
+N = int(os.getenv("SSDP_N", 10))   # Dynamic Window Width
 ALPHA = float(os.getenv("SSDP_ALPHA", 0.9)) # Relative-to-leader threshold
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
@@ -115,7 +115,9 @@ class Node:
         return "".join(self.return_path())
 
     def update_score(self):
-        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
+        w_confidence = 2.0
+        w_diversity = 0.5
+        self.score = (w_confidence * self.confidence) + self.similarity_bonus + (w_diversity * self.diversity_reward) + self.parent_score
 
 class Cluster:
     def __init__(self, nodes):
