@@ -25,8 +25,8 @@ load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH")
 
 # SSDP Parameters from README
-B = int(os.getenv("SSDP_B", 25))  # Batch Expansion
-N = int(os.getenv("SSDP_N", 10))   # Dynamic Window Width
+B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
+N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
 ALPHA = float(os.getenv("SSDP_ALPHA", 0.9)) # Relative-to-leader threshold
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
@@ -35,8 +35,8 @@ MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 5))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
 TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.6))
 DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
-INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.2))
-DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.9))
+INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.4))
+DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.95))
 
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
@@ -115,9 +115,7 @@ class Node:
         return "".join(self.return_path())
 
     def update_score(self):
-        w_confidence = 2.0
-        w_diversity = 0.5
-        self.score = (w_confidence * self.confidence) + self.similarity_bonus + (w_diversity * self.diversity_reward) + self.parent_score
+        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
 
 class Cluster:
     def __init__(self, nodes):
