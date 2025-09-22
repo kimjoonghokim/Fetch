@@ -27,7 +27,7 @@ policy_fpath = os.getenv("POLICY_MODEL_PATH")
 # SSDP Parameters from README
 B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
 N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
-ALPHA = float(os.getenv("SSDP_ALPHA", 0.9)) # Relative-to-leader threshold
+ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
 DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
