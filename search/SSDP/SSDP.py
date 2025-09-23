@@ -162,72 +162,72 @@ class Tree:
         if not self.window:
             return False
 
-        # 1. Generate B candidates
-        if CLUSTER_GLOBALLY:
-            # ... (existing global clustering logic) ...
+        # 1. Generate all candidate nodes
+        candidates = []
+        window_scores = [n.score for n in self.window]
+        total_window_score = sum(window_scores)
+        if total_window_score > 0:
+            allocations = [int(B * score / total_window_score) for score in window_scores]
+            remainder = B - sum(allocations)
+            for i in range(remainder):
+                allocations[i % len(allocations)] += 1
         else:
-            # Sibling-only clustering logic
-            all_representatives = []
+            allocations = [B // len(self.window)] * len(self.window)
+            remainder = B % len(self.window)
+            for i in range(remainder):
+                allocations[i] += 1
+
+        for node, num_to_gen in zip(self.window, allocations):
+            if node.is_leaf:
+                continue
+            for _ in range(num_to_gen):
+                path = node.print_path()
+                next_step, logprobs, usage = call_policy(self.question, path)
+                self.prompt_tokens += usage.get("prompt_tokens", 0)
+                self.completion_tokens += usage.get("completion_tokens", 0)
+                self.total_tokens += usage.get("total_tokens", 0)
+                
+                if logprobs and logprobs.get('token_logprobs'):
+                    confidence = np.mean([p for p in logprobs.get('token_logprobs') if p is not None])
+                    confidence = np.exp(confidence)
+                else:
+                    confidence = 0.5
+                
+                new_node = self.add_node(next_step, confidence, node, node.timestep + 1, assert_end(next_step))
+                fix_value(new_node)
+                if new_node.confidence > -1:
+                    candidates.append(new_node)
+
+        if not candidates:
+            return False
+
+        # 2. Get embeddings for all candidates
+        texts = [c.content for c in candidates]
+        global_labels, embeddings, usage = call_esm(texts)
+        self.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
+        self.embedding_completion_tokens += usage.get("completion_tokens", 0)
+        self.embedding_total_tokens += usage.get("total_tokens", 0)
+        for node, emb in zip(candidates, embeddings):
+            node.embedding = emb
+
+        # 3. Cluster nodes
+        if CLUSTER_GLOBALLY:
+            clusters_map = defaultdict(list)
+            for node, label in zip(candidates, global_labels):
+                clusters_map[label].append(node)
+            clusters = [Cluster(nodes) for nodes in clusters_map.values()]
+        else: # Sibling-only clustering
             parent_to_children = defaultdict(list)
-
-            # Determine allocations first
-            window_scores = [n.score for n in self.window]
-            total_window_score = sum(window_scores)
-            if total_window_score > 0:
-                allocations = [int(B * score / total_window_score) for score in window_scores]
-                remainder = B - sum(allocations)
-                for i in range(remainder):
-                    allocations[i % len(allocations)] += 1
-            else:
-                allocations = [B // len(self.window)] * len(self.window)
-                remainder = B % len(self.window)
-                for i in range(remainder):
-                    allocations[i] += 1
-
-            # Generate all candidates
-            for parent_node, num_to_gen in zip(self.window, allocations):
-                if parent_node.is_leaf:
-                    continue
-                for _ in range(num_to_gen):
-                    path = parent_node.print_path()
-                    next_step, logprobs, usage = call_policy(self.question, path)
-                    self.prompt_tokens += usage.get("prompt_tokens", 0)
-                    self.completion_tokens += usage.get("completion_tokens", 0)
-                    self.total_tokens += usage.get("total_tokens", 0)
-                    
-                    if logprobs and logprobs.get('token_logprobs'):
-                        confidence = np.mean([p for p in logprobs.get('token_logprobs') if p is not None])
-                        confidence = np.exp(confidence)
-                    else:
-                        confidence = 0.5
-                    
-                    new_node = self.add_node(next_step, confidence, parent_node, parent_node.timestep + 1, assert_end(next_step))
-                    fix_value(new_node)
-                    if new_node.confidence > -1:
-                        parent_to_children[parent_node].append(new_node)
-
-            all_candidates = [child for children in parent_to_children.values() for child in children]
-            if not all_candidates:
-                return False
-
-            # Get embeddings for all candidates in one batch
-            texts = [c.content for c in all_candidates]
-            _, embeddings, usage = call_esm(texts)
-            self.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
-            self.embedding_completion_tokens += usage.get("completion_tokens", 0)
-            self.embedding_total_tokens += usage.get("total_tokens", 0)
-            for node, emb in zip(all_candidates, embeddings):
-                node.embedding = emb
-
-            # Perform clustering per sibling group
-            cluster_counter = 0
+            for node in candidates:
+                parent_to_children[node.parent].append(node)
+            
+            clusters = []
             for parent_node, siblings in parent_to_children.items():
                 if len(siblings) < 2:
                     if siblings:
-                        siblings[0].is_representative = True
-                        all_representatives.append(siblings[0])
+                        clusters.append(Cluster(siblings))
                     continue
-
+                
                 sibling_embeddings = np.array([s.embedding for s in siblings])
                 similarity_matrix = cosine_similarity(sibling_embeddings)
                 clustering = AgglomerativeClustering(n_clusters=None, affinity='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
@@ -236,27 +236,28 @@ class Tree:
                 for node, label in zip(siblings, clustering.labels_):
                     sibling_clusters_map[label].append(node)
                 
-                for label, nodes_in_cluster in sibling_clusters_map.items():
-                    cluster_id = f"T{nodes_in_cluster[0].timestep}_P{id(parent_node)}_C{label}"
-                    for node in nodes_in_cluster:
-                        node.cluster_id = cluster_id
-                    
-                    cluster = Cluster(nodes_in_cluster)
-                    cluster.representative.is_representative = True
-                    all_representatives.append(cluster.representative)
-            
-            clusters = all_representatives # For the subsequent logic, treat representatives as clusters
+                for nodes_in_cluster in sibling_clusters_map.values():
+                    clusters.append(Cluster(nodes_in_cluster))
 
-        # ... (The rest of the logic for scoring, diversity, and pruning remains largely the same)
-        # ... it will operate on `clusters` which is now a list of representatives
+        # Tag nodes with cluster info for visualization
+        for i, cluster in enumerate(clusters):
+            if not cluster.nodes:
+                continue
+            cluster_id = f"T{cluster.nodes[0].timestep}_C{i}"
+            for node in cluster.nodes:
+                node.cluster_id = cluster_id
+            cluster.representative.is_representative = True
 
+        # 4. Score representatives and apply diversity reward
         if not clusters:
             return False
             
-        clusters.sort(key=lambda x: x.score, reverse=True)
-        leader = clusters[0]
+        # The list of things to consider for the next window are the representatives
+        representatives = [c.representative for c in clusters]
+        representatives.sort(key=lambda x: x.score, reverse=True)
+        leader = representatives[0]
         
-        for rep in clusters[1:]:
+        for rep in representatives[1:]:
             leader_emb = np.array(leader.embedding).reshape(1, -1)
             cluster_emb = np.array(rep.embedding).reshape(1, -1)
             if cosine_similarity(leader_emb, cluster_emb)[0][0] < (1 - DISTANCE):
@@ -265,8 +266,11 @@ class Tree:
                 rep.diversity_reward += decaying_reward
             rep.update_score()
 
-        top_clusters = clusters[:N]
+        # 5. Keep top N representatives
+        representatives.sort(key=lambda x: x.score, reverse=True) # Re-sort after diversity reward
+        top_representatives = representatives[:N]
 
+        # 6. Hybrid Pruning
         leader_score = leader.score
         event_timestep = leader.timestep
         min_score_d = BETA + GAMMA * event_timestep
@@ -280,8 +284,9 @@ class Tree:
             'final_threshold': pruning_threshold
         })
 
-        self.window = [rep for rep in top_clusters if rep.score >= pruning_threshold]
+        self.window = [rep for rep in top_representatives if rep.score >= pruning_threshold]
 
+        # 7. Check stopping criteria
         if self.check_stopping_criteria():
             return False
             
