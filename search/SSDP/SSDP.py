@@ -230,7 +230,7 @@ class Tree:
                 
                 sibling_embeddings = np.array([s.embedding for s in siblings])
                 similarity_matrix = cosine_similarity(sibling_embeddings)
-                clustering = AgglomerativeClustering(n_clusters=None, affinity='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
+                clustering = AgglomerativeClustering(n_clusters=None, metric='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
                 
                 sibling_clusters_map = defaultdict(list)
                 for node, label in zip(siblings, clustering.labels_):
