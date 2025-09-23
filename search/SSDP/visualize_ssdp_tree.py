@@ -92,49 +92,78 @@ def is_correct(generated_answer, true_answer):
         return False
 
 def build_graph(dot, tree):
-    """Builds the graph visualization from the tree data."""
+    """Builds the graph visualization from the tree data, level by level."""
     nodes_by_id = {id(node): node for node in tree.all_nodes}
-    clusters = defaultdict(list)
+    nodes_by_timestep = defaultdict(list)
     for node in tree.all_nodes:
-        if node.cluster_id:
-            clusters[node.cluster_id].append(node)
+        nodes_by_timestep[node.timestep].append(node)
 
-    # Add the root node separately
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        root_id = str(id(tree.root))
-        content = textwrap.fill(tree.question, width=50)
-        s.node(root_id, label=f"QUESTION:\n{content}", shape='box', style='filled', fillcolor='orange')
+    pruning_history_map = {h['timestep']: h for h in getattr(tree, 'pruning_history', [])}
 
-    # Add all clustered nodes
-    for cluster_id, nodes_in_cluster in clusters.items():
-        with dot.subgraph(name=f'cluster_{cluster_id}') as c:
-            c.attr(label=f'Cluster {cluster_id}', style='rounded', color='black')
-            for node in nodes_in_cluster:
-                node_id = str(id(node))
-                content = textwrap.fill(node.content.strip(), width=50)
-                label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
-                
-                penwidth = '1'
-                fillcolor = 'white' # Default for non-representative
+    max_timestep = max(nodes_by_timestep.keys()) if nodes_by_timestep else 0
 
-                if node.is_representative:
-                    penwidth = '3'
-                    if node.children or node.is_leaf: # Expanded or terminal
-                        fillcolor = 'lightblue'
-                    else: # Pruned representative
-                        fillcolor = 'lightgrey'
-                
-                if node.is_leaf:
-                    fillcolor = 'lightgreen'
+    for i in range(max_timestep + 1):
+        # Create a subgraph for the current level to enforce rank
+        with dot.subgraph(name=f'rank_{i}') as s:
+            s.attr(rank='same')
+            
+            # Add invisible node for threshold label
+            threshold_info = pruning_history_map.get(i)
+            if threshold_info:
+                label = (
+                    f"Threshold: {threshold_info['final_threshold']:.2f}\n"
+                    f"(Rel: {threshold_info['relative_threshold']:.2f}, "
+                    f"Depth: {threshold_info['depth_threshold']:.2f})")
+                s.node(f'level_{i}_info', label=label, shape='plaintext', fontsize='10')
 
-                c.node(node_id, label=label, shape='box', style='filled', fillcolor=fillcolor, penwidth=penwidth)
+            nodes_in_level = nodes_by_timestep[i]
+            clusters = defaultdict(list)
+            for node in nodes_in_level:
+                if node.cluster_id:
+                    clusters[node.cluster_id].append(node)
+            
+            if not clusters: # Handle nodes without clusters (like root)
+                for node in nodes_in_level:
+                    add_node_to_graph(s, node)
+            else:
+                for cluster_id, nodes_in_cluster in clusters.items():
+                    with s.subgraph(name=f'cluster_{cluster_id}') as c:
+                        c.attr(label=f'Cluster\n{cluster_id}', style='rounded', color='black')
+                        for node in nodes_in_cluster:
+                            add_node_to_graph(c, node)
 
-    # Add all edges
+    # Add all edges between nodes
     for node_id, node in nodes_by_id.items():
         if node.parent:
             parent_id = str(id(node.parent))
             dot.edge(parent_id, str(node_id))
+
+def add_node_to_graph(graph, node):
+    """Adds a single node to the graph with appropriate styling."""
+    node_id = str(id(node))
+    
+    if node.parent is None: # Root node
+        content = textwrap.fill(node.tree.question, width=50)
+        label = f"QUESTION:\n{content}"
+        color = 'orange'
+    else:
+        content = textwrap.fill(node.content.strip(), width=50)
+        label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
+        
+        penwidth = '1'
+        fillcolor = 'white' # Default for non-representative
+
+        if node.is_representative:
+            penwidth = '3'
+            if node.children or node.is_leaf:
+                fillcolor = 'lightblue' # Expanded or terminal
+            else:
+                fillcolor = 'lightgrey' # Pruned representative
+        
+        if node.is_leaf:
+            fillcolor = 'lightgreen'
+
+    graph.node(node_id, label=label, shape='box', style='filled', fillcolor=fillcolor, penwidth=penwidth)
 
 def main(pickle_fpath, question_index):
     """Main function to load data and generate the visualization."""
@@ -167,19 +196,11 @@ def main(pickle_fpath, question_index):
             outcome_str = f"Outcome: CORRECT (Predicted: {predicted_answer})"
         else:
             outcome_str = f"Outcome: INCORRECT (Predicted: {predicted_answer})"
-    
-    # Format pruning history
-    pruning_info = "\n\nPruning History:\n" + "-"*20
-    if hasattr(tree_to_visualize, 'pruning_history'):
-        for record in tree_to_visualize.pruning_history:
-            pruning_info += (f"\nT={{record['timestep']}}: Threshold={{record['final_threshold']:.2f}} "
-                           f"(Rel={{record['relative_threshold']:.2f}}, Depth={{record['depth_threshold']:.2f}})")
 
     graph_title = (
                    f"SSDP Search Tree for Question {question_index}\n"
                    f"Correct Answer: {true_answer}\n"
-                   f"{outcome_str}"
-                   f"{pruning_info}")
+                   f"{outcome_str}")
 
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
     dot.attr(rankdir='TB', size='50,50', dpi='150', fontsize='12', fontcolor='black', label=graph_title, labelloc='t')
