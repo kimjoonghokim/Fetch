@@ -29,7 +29,7 @@ policy_fpath = os.getenv("POLICY_MODEL_PATH")
 # SSDP Parameters from README
 B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
 N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
-ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold
+ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold (DEACTIVATED)
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
 DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
@@ -210,7 +210,8 @@ class Tree:
         for node, emb in zip(candidates, embeddings):
             node.embedding = emb
 
-        # 3. Cluster nodes
+        # 3. Cluster nodes based on strategy
+        clusters = []
         if CLUSTER_GLOBALLY:
             clusters_map = defaultdict(list)
             for node, label in zip(candidates, global_labels):
@@ -221,7 +222,6 @@ class Tree:
             for node in candidates:
                 parent_to_children[node.parent].append(node)
             
-            clusters = []
             for parent_node, siblings in parent_to_children.items():
                 if len(siblings) < 2:
                     if siblings:
@@ -250,9 +250,9 @@ class Tree:
 
         # 4. Score representatives and apply diversity reward
         if not clusters:
-            return False
+            self.window = []
+            return True
             
-        # The list of things to consider for the next window are the representatives
         representatives = [c.representative for c in clusters]
         representatives.sort(key=lambda x: x.score, reverse=True)
         leader = representatives[0]
@@ -267,19 +267,19 @@ class Tree:
             rep.update_score()
 
         # 5. Keep top N representatives
-        representatives.sort(key=lambda x: x.score, reverse=True) # Re-sort after diversity reward
+        representatives.sort(key=lambda x: x.score, reverse=True)
         top_representatives = representatives[:N]
 
-        # 6. Hybrid Pruning
+        # 6. Pruning (with corrected rule)
         leader_score = leader.score
         event_timestep = leader.timestep
         min_score_d = BETA + GAMMA * event_timestep
-        pruning_threshold = max(ALPHA * leader_score, min_score_d)
+        pruning_threshold = min_score_d # ALPHA rule removed
 
         self.pruning_history.append({
             'timestep': event_timestep,
             'leader_score': leader_score,
-            'relative_threshold': ALPHA * leader_score,
+            'relative_threshold': ALPHA * leader_score, # Still record for analysis
             'depth_threshold': min_score_d,
             'final_threshold': pruning_threshold
         })
@@ -295,8 +295,8 @@ class Tree:
     def check_stopping_criteria(self):
         if len(self.terminal_nodes) >= MAX_TERMINAL_NODES:
             return True
-        if len(self.window) <= 1:
-            pass
+        if len(self.window) == 0:
+            return True
         return False
 
 def worker(tree):
