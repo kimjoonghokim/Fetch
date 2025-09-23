@@ -106,7 +106,8 @@ class Node:
         self.is_representative = False
 
     def get_depth(self):
-        return len(self.return_path()) + 1
+        # This is now consistent with timestep, where root is 0
+        return self.timestep
 
     def return_path(self):
         if self.content is None:
@@ -253,13 +254,13 @@ class Tree:
 
         # 6. Hybrid Pruning
         leader_score = leader.score
-        depth = leader.representative.get_depth()
-        min_score_d = BETA + GAMMA * depth
+        event_timestep = leader.representative.timestep
+        min_score_d = BETA + GAMMA * event_timestep
         pruning_threshold = max(ALPHA * leader_score, min_score_d)
 
         # Record pruning info
         self.pruning_history.append({
-            'timestep': depth,
+            'timestep': event_timestep,
             'leader_score': leader_score,
             'relative_threshold': ALPHA * leader_score,
             'depth_threshold': min_score_d,
