@@ -90,30 +90,36 @@ def build_graph(dot, tree):
         if node.cluster_id:
             clusters[node.cluster_id].append(node)
 
-    # Add all nodes and cluster subgraphs
+    # Add the root node separately
     with dot.subgraph() as s:
         s.attr(rank='same')
         root_id = str(id(tree.root))
         content = textwrap.fill(tree.question, width=50)
         s.node(root_id, label=f"QUESTION:\n{content}", shape='box', style='filled', fillcolor='orange')
 
+    # Add all clustered nodes
     for cluster_id, nodes_in_cluster in clusters.items():
-        # Create a subgraph for each cluster
         with dot.subgraph(name=f'cluster_{cluster_id}') as c:
-            c.attr(label=f'Cluster {cluster_id}', style='rounded', color='gray')
+            c.attr(label=f'Cluster {cluster_id}', style='rounded', color='black')
             for node in nodes_in_cluster:
                 node_id = str(id(node))
                 content = textwrap.fill(node.content.strip(), width=50)
                 label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
                 
-                color = 'lightblue'
                 penwidth = '1'
-                if node.is_representative:
-                    penwidth = '3' # Thicker border for representatives
-                if node.is_leaf:
-                    color = 'lightgreen'
+                fillcolor = 'white' # Default for non-representative
 
-                c.node(node_id, label=label, shape='box', style='filled', fillcolor=color, penwidth=penwidth)
+                if node.is_representative:
+                    penwidth = '3'
+                    if node.children or node.is_leaf: # Expanded or terminal
+                        fillcolor = 'lightblue'
+                    else: # Pruned representative
+                        fillcolor = 'lightgrey'
+                
+                if node.is_leaf:
+                    fillcolor = 'lightgreen'
+
+                c.node(node_id, label=label, shape='box', style='filled', fillcolor=fillcolor, penwidth=penwidth)
 
     # Add all edges
     for node_id, node in nodes_by_id.items():
