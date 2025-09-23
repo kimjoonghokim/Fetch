@@ -91,52 +91,6 @@ def is_correct(generated_answer, true_answer):
     except (ValueError, TypeError):
         return False
 
-def build_graph(dot, tree):
-    """Builds the graph visualization from the tree data, level by level."""
-    nodes_by_id = {id(node): node for node in tree.all_nodes}
-    
-    # 1. Add all nodes to the graph first
-    for node in tree.all_nodes:
-        add_node_to_graph(dot, node)
-
-    # 2. Add all edges
-    for node in tree.all_nodes:
-        if node.parent:
-            dot.edge(str(id(node.parent)), str(id(node)))
-
-    # 3. Group nodes by level to enforce rank, and add threshold labels
-    nodes_by_timestep = defaultdict(list)
-    for node in tree.all_nodes:
-        nodes_by_timestep[node.timestep].append(node)
-    
-    pruning_history_map = {h['timestep']: h for h in getattr(tree, 'pruning_history', [])}
-
-    for i in sorted(nodes_by_timestep.keys()):
-        with dot.subgraph(name=f'rank_{i}') as s:
-            s.attr(rank='same')
-            # Add invisible node for threshold label
-            threshold_info = pruning_history_map.get(i)
-            if threshold_info:
-                label = (f"Threshold @ T={i}: {threshold_info['final_threshold']:.2f}\n" 
-                         f"(Rel: {threshold_info['relative_threshold']:.2f}, " 
-                         f"Depth: {threshold_info['depth_threshold']:.2f})")
-                s.node(f'level_{i}_info', label=label, shape='plaintext', fontsize='10')
-            # Add actual nodes to the rank group
-            for node in nodes_by_timestep[i]:
-                s.node(str(id(node)))
-
-    # 4. Group nodes by cluster and draw boxes
-    clusters = defaultdict(list)
-    for node in tree.all_nodes:
-        if node.cluster_id:
-            clusters[node.cluster_id].append(node)
-
-    for cluster_id, nodes_in_cluster in clusters.items():
-        with dot.subgraph(name=f'cluster_{cluster_id}') as c:
-            c.attr(label=f'Cluster\n{cluster_id}', color='black', style='rounded')
-            for node in nodes_in_cluster:
-                c.node(str(id(node))) # Add existing node to cluster subgraph
-
 def add_node_to_graph(graph, node):
     """Adds a single node to the graph with appropriate styling."""
     node_id = str(id(node))
@@ -147,7 +101,7 @@ def add_node_to_graph(graph, node):
         label = f"QUESTION:\n{content}"
         fillcolor = 'orange'
     else:
-        content = textwrap.fill(node.content.strip(), width=50)
+        content = textwrap.fill(node.content.strip() if node.content else "", width=50)
         label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
         
         fillcolor = 'white' # Default for non-representative (merged)
@@ -163,6 +117,51 @@ def add_node_to_graph(graph, node):
             fillcolor = 'lightgreen'
 
     graph.node(node_id, label=label, shape='box', style='filled', fillcolor=fillcolor, penwidth=penwidth)
+
+def build_graph(dot, tree):
+    """Builds the graph visualization using a multi-pass approach."""
+    # Pass 1: Add all nodes to the main graph
+    for node in tree.all_nodes:
+        add_node_to_graph(dot, node)
+
+    # Pass 2: Add all edges
+    for node in tree.all_nodes:
+        if node.parent:
+            dot.edge(str(id(node.parent)), str(id(node)))
+
+    # Pass 3: Group nodes by cluster and draw boxes
+    clusters = defaultdict(list)
+    for node in tree.all_nodes:
+        if node.cluster_id:
+            clusters[node.cluster_id].append(node)
+
+    for cluster_id, nodes_in_cluster in clusters.items():
+        with dot.subgraph(name=f'cluster_{cluster_id}') as c:
+            c.attr(label=f'Cluster\n{cluster_id}', color='black', style='rounded')
+            for node in nodes_in_cluster:
+                c.node(str(id(node))) # Add existing node to cluster subgraph
+
+    # Pass 4: Group nodes by level to enforce rank and add labels
+    nodes_by_timestep = defaultdict(list)
+    for node in tree.all_nodes:
+        nodes_by_timestep[node.timestep].append(node)
+    
+    pruning_history_map = {h['timestep']: h for h in getattr(tree, 'pruning_history', [])}
+
+    for i in sorted(nodes_by_timestep.keys()):
+        if i == 0: continue # Skip root level for threshold labels
+        with dot.subgraph(name=f'rank_{i}') as s:
+            s.attr(rank='same')
+            # Add invisible node for threshold label
+            threshold_info = pruning_history_map.get(i)
+            if threshold_info:
+                label = (f"Threshold @ T={i}: {threshold_info['final_threshold']:.2f}\n" 
+                         f"(Rel: {threshold_info['relative_threshold']:.2f}, " 
+                         f"Depth: {threshold_info['depth_threshold']:.2f})")
+                s.node(f'level_{i}_info', label=label, shape='plaintext', fontsize='10')
+            # Add actual nodes to the rank group
+            for node in nodes_by_timestep[i]:
+                s.node(str(id(node)))
 
 def main(pickle_fpath, question_index):
     """Main function to load data and generate the visualization."""
@@ -196,8 +195,8 @@ def main(pickle_fpath, question_index):
         else:
             outcome_str = f"Outcome: INCORRECT (Predicted: {predicted_answer})"
 
-    graph_title = (f"SSDP Search Tree for Question {question_index}\n" 
-                   f"Correct Answer: {true_answer}\n" 
+    graph_title = (f"SSDP Search Tree for Question {question_index}\n"
+                   f"Correct Answer: {true_answer}\n"
                    f"{outcome_str}")
 
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
