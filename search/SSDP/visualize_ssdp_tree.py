@@ -103,34 +103,40 @@ def build_graph(dot, tree):
     max_timestep = max(nodes_by_timestep.keys()) if nodes_by_timestep else 0
 
     for i in range(max_timestep + 1):
-        # Create a subgraph for the current level to enforce rank
         with dot.subgraph(name=f'rank_{i}') as s:
             s.attr(rank='same')
             
             # Add invisible node for threshold label
             threshold_info = pruning_history_map.get(i)
             if threshold_info:
-                label = (
-                    f"Threshold: {threshold_info['final_threshold']:.2f}\n"
-                    f"(Rel: {threshold_info['relative_threshold']:.2f}, "
-                    f"Depth: {threshold_info['depth_threshold']:.2f})")
+                label = (f"Threshold: {threshold_info['final_threshold']:.2f}\n" 
+                         f"(Rel: {threshold_info['relative_threshold']:.2f}, " 
+                         f"Depth: {threshold_info['depth_threshold']:.2f})")
                 s.node(f'level_{i}_info', label=label, shape='plaintext', fontsize='10')
 
             nodes_in_level = nodes_by_timestep[i]
             clusters = defaultdict(list)
+            # Group nodes by cluster_id, handle unclustered nodes
+            unclustered_nodes = []
             for node in nodes_in_level:
                 if node.cluster_id:
                     clusters[node.cluster_id].append(node)
+                elif node.parent is not None: # Don't put root in unclustered
+                    unclustered_nodes.append(node)
             
-            if not clusters: # Handle nodes without clusters (like root)
-                for node in nodes_in_level:
-                    add_node_to_graph(s, node)
-            else:
-                for cluster_id, nodes_in_cluster in clusters.items():
-                    with s.subgraph(name=f'cluster_{cluster_id}') as c:
-                        c.attr(label=f'Cluster\n{cluster_id}', style='rounded', color='black')
-                        for node in nodes_in_cluster:
-                            add_node_to_graph(c, node)
+            # Draw unclustered nodes for this level
+            for node in unclustered_nodes:
+                add_node_to_graph(s, node)
+
+            # Draw clustered nodes for this level
+            for cluster_id, nodes_in_cluster in clusters.items():
+                with s.subgraph(name=f'cluster_{cluster_id}') as c:
+                    c.attr(label=f'Cluster\n{cluster_id}', style='rounded', color='black')
+                    for node in nodes_in_cluster:
+                        add_node_to_graph(c, node)
+    
+    # Add root node separately for definite top placement
+    add_node_to_graph(dot, tree.root)
 
     # Add all edges between nodes
     for node_id, node in nodes_by_id.items():
@@ -141,17 +147,17 @@ def build_graph(dot, tree):
 def add_node_to_graph(graph, node):
     """Adds a single node to the graph with appropriate styling."""
     node_id = str(id(node))
-    
+    penwidth = '1'
+
     if node.parent is None: # Root node
         content = textwrap.fill(node.tree.question, width=50)
         label = f"QUESTION:\n{content}"
-        color = 'orange'
+        fillcolor = 'orange'
     else:
         content = textwrap.fill(node.content.strip(), width=50)
         label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
         
-        penwidth = '1'
-        fillcolor = 'white' # Default for non-representative
+        fillcolor = 'white' # Default for non-representative (merged)
 
         if node.is_representative:
             penwidth = '3'
@@ -197,9 +203,8 @@ def main(pickle_fpath, question_index):
         else:
             outcome_str = f"Outcome: INCORRECT (Predicted: {predicted_answer})"
 
-    graph_title = (
-                   f"SSDP Search Tree for Question {question_index}\n"
-                   f"Correct Answer: {true_answer}\n"
+    graph_title = (f"SSDP Search Tree for Question {question_index}\n" 
+                   f"Correct Answer: {true_answer}\n" 
                    f"{outcome_str}")
 
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
