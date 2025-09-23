@@ -142,6 +142,7 @@ class Tree:
         self.all_nodes = [self.root]
         self.terminal_nodes = []
         self.window = [self.root]
+        self.pruning_history = []
         
         # Token tracking
         self.prompt_tokens = 0
@@ -255,6 +256,15 @@ class Tree:
         depth = leader.representative.get_depth()
         min_score_d = BETA + GAMMA * depth
         pruning_threshold = max(ALPHA * leader_score, min_score_d)
+
+        # Record pruning info
+        self.pruning_history.append({
+            'timestep': depth,
+            'leader_score': leader_score,
+            'relative_threshold': ALPHA * leader_score,
+            'depth_threshold': min_score_d,
+            'final_threshold': pruning_threshold
+        })
 
         self.window = [c.representative for c in top_clusters if c.score >= pruning_threshold]
 

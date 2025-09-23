@@ -61,6 +61,7 @@ class Tree:
         self.all_nodes = [self.root]
         self.terminal_nodes = []
         self.window = [self.root]
+        self.pruning_history = []
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
@@ -166,10 +167,22 @@ def main(pickle_fpath, question_index):
             outcome_str = f"Outcome: CORRECT (Predicted: {predicted_answer})"
         else:
             outcome_str = f"Outcome: INCORRECT (Predicted: {predicted_answer})"
+    
+    # Format pruning history
+    pruning_info = "\n\nPruning History:\n" + "-"*20
+    if hasattr(tree_to_visualize, 'pruning_history'):
+        for record in tree_to_visualize.pruning_history:
+            pruning_info += (f"\nT={{record['timestep']}}: Threshold={{record['final_threshold']:.2f}} "
+                           f"(Rel={{record['relative_threshold']:.2f}}, Depth={{record['depth_threshold']:.2f}})")
 
-    graph_title = f"SSDP Search Tree for Question {question_index}\nCorrect Answer: {true_answer}\n{outcome_str}"
+    graph_title = (
+                   f"SSDP Search Tree for Question {question_index}\n"
+                   f"Correct Answer: {true_answer}\n"
+                   f"{outcome_str}"
+                   f"{pruning_info}")
+
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
-    dot.attr(rankdir='TB', size='50,50', dpi='150', fontsize='12', fontcolor='black', label=graph_title)
+    dot.attr(rankdir='TB', size='50,50', dpi='150', fontsize='12', fontcolor='black', label=graph_title, labelloc='t')
 
     print("Building graph...")
     build_graph(dot, tree_to_visualize)
