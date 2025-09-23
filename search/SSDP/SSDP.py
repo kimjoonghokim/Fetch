@@ -101,6 +101,10 @@ class Node:
         self.parent_score = parent.score if parent else 0
         self.score = 0
 
+        # Cluster info for visualization
+        self.cluster_id = None
+        self.is_representative = False
+
     def get_depth(self):
         return len(self.return_path()) + 1
 
@@ -217,6 +221,15 @@ class Tree:
             clusters_map[label].append(node)
         
         clusters = [Cluster(nodes) for nodes in clusters_map.values()]
+
+        # Tag nodes with cluster info for visualization
+        for i, cluster in enumerate(clusters):
+            if not cluster.nodes:
+                continue
+            cluster_id = f"T{cluster.nodes[0].timestep}_C{i}"
+            for node in cluster.nodes:
+                node.cluster_id = cluster_id
+            cluster.representative.is_representative = True
 
         # 4. Score representatives and apply diversity reward
         if not clusters:

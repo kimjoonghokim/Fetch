@@ -4,6 +4,7 @@ import graphviz
 import os
 import re
 import textwrap
+from collections import defaultdict
 
 # Class definitions from ssdp.py, needed to load the pickle file
 class Node:
@@ -20,6 +21,8 @@ class Node:
         self.diversity_reward = 0
         self.parent_score = parent.score if parent else 0
         self.score = 0
+        self.cluster_id = None
+        self.is_representative = False
 
     def get_depth(self):
         return len(self.return_path()) + 1
@@ -79,31 +82,44 @@ def extract_answer(text):
         return all_numbers[-1]
     return None
 
-def add_nodes_to_graph(graph, node, parent_id=None):
-    """Recursively adds nodes and edges to the graphviz graph."""
-    node_id = str(id(node))
-    
-    if parent_id is None: # Root node
-        content = textwrap.fill(node.tree.question, width=50)
-        label = f"QUESTION:\n{content}"
-        color = 'orange'
-    else:
-        content = node.content.strip() if node.content else ""
-        wrapped_content = textwrap.fill(content, width=50)
-        label = f"Content: {wrapped_content}\nScore: {node.score:.2f}\nConfidence: {node.confidence:.2f}"
-        color = 'lightblue'
-        if node.is_leaf:
-            color = 'lightgreen'
-        if not node.children and not node.is_leaf:
-            color = 'lightgrey'
+def build_graph(dot, tree):
+    """Builds the graph visualization from the tree data."""
+    nodes_by_id = {id(node): node for node in tree.all_nodes}
+    clusters = defaultdict(list)
+    for node in tree.all_nodes:
+        if node.cluster_id:
+            clusters[node.cluster_id].append(node)
 
-    graph.node(node_id, label=label, shape='box', style='filled', fillcolor=color)
-    
-    if parent_id:
-        graph.edge(parent_id, node_id)
-        
-    for child in node.children:
-        add_nodes_to_graph(graph, child, node_id)
+    # Add all nodes and cluster subgraphs
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        root_id = str(id(tree.root))
+        content = textwrap.fill(tree.question, width=50)
+        s.node(root_id, label=f"QUESTION:\n{content}", shape='box', style='filled', fillcolor='orange')
+
+    for cluster_id, nodes_in_cluster in clusters.items():
+        # Create a subgraph for each cluster
+        with dot.subgraph(name=f'cluster_{cluster_id}') as c:
+            c.attr(label=f'Cluster {cluster_id}', style='rounded', color='gray')
+            for node in nodes_in_cluster:
+                node_id = str(id(node))
+                content = textwrap.fill(node.content.strip(), width=50)
+                label = f"Content: {content}\nScore: {node.score:.2f}\nConf: {node.confidence:.2f}"
+                
+                color = 'lightblue'
+                penwidth = '1'
+                if node.is_representative:
+                    penwidth = '3' # Thicker border for representatives
+                if node.is_leaf:
+                    color = 'lightgreen'
+
+                c.node(node_id, label=label, shape='box', style='filled', fillcolor=color, penwidth=penwidth)
+
+    # Add all edges
+    for node_id, node in nodes_by_id.items():
+        if node.parent:
+            parent_id = str(id(node.parent))
+            dot.edge(parent_id, str(node_id))
 
 def main(pickle_fpath, question_index):
     """Main function to load data and generate the visualization."""
@@ -128,10 +144,10 @@ def main(pickle_fpath, question_index):
     
     graph_title = f"SSDP Search Tree for Question {question_index}\nCorrect Answer: {true_answer}"
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
-    dot.attr(rankdir='TB', size='50,50', dpi='350', fontsize='20', fontcolor='black', label=graph_title)
+    dot.attr(rankdir='TB', size='50,50', dpi='150', fontsize='12', fontcolor='black', label=graph_title)
 
     print("Building graph...")
-    add_nodes_to_graph(dot, tree_to_visualize.root)
+    build_graph(dot, tree_to_visualize)
     
     output_filename = f'ssdp_tree_q{question_index}'
     print(f"Rendering graph to {output_filename}.png ...")
