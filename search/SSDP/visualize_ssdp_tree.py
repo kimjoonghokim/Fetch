@@ -82,6 +82,14 @@ def extract_answer(text):
         return all_numbers[-1]
     return None
 
+def is_correct(generated_answer, true_answer):
+    if generated_answer is None or true_answer is None:
+        return False
+    try:
+        return abs(float(generated_answer) - float(true_answer)) < 1e-3
+    except (ValueError, TypeError):
+        return False
+
 def build_graph(dot, tree):
     """Builds the graph visualization from the tree data."""
     nodes_by_id = {id(node): node for node in tree.all_nodes}
@@ -147,8 +155,19 @@ def main(pickle_fpath, question_index):
 
     tree_to_visualize = problems[question_index]
     true_answer = extract_answer(tree_to_visualize.answer)
-    
-    graph_title = f"SSDP Search Tree for Question {question_index}\nCorrect Answer: {true_answer}"
+
+    # Determine outcome
+    best_node = None
+    outcome_str = "Outcome: No terminal nodes found"
+    if tree_to_visualize.terminal_nodes:
+        best_node = max(tree_to_visualize.terminal_nodes, key=lambda node: node.score)
+        predicted_answer = extract_answer(best_node.print_path())
+        if is_correct(predicted_answer, true_answer):
+            outcome_str = f"Outcome: CORRECT (Predicted: {predicted_answer})"
+        else:
+            outcome_str = f"Outcome: INCORRECT (Predicted: {predicted_answer})"
+
+    graph_title = f"SSDP Search Tree for Question {question_index}\nCorrect Answer: {true_answer}\n{outcome_str}"
     dot = graphviz.Digraph(comment=f'SSDP Search Tree for Question {question_index}')
     dot.attr(rankdir='TB', size='50,50', dpi='150', fontsize='12', fontcolor='black', label=graph_title)
 
