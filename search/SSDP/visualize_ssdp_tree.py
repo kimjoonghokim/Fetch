@@ -94,55 +94,48 @@ def is_correct(generated_answer, true_answer):
 def build_graph(dot, tree):
     """Builds the graph visualization from the tree data, level by level."""
     nodes_by_id = {id(node): node for node in tree.all_nodes}
+    
+    # 1. Add all nodes to the graph first
+    for node in tree.all_nodes:
+        add_node_to_graph(dot, node)
+
+    # 2. Add all edges
+    for node in tree.all_nodes:
+        if node.parent:
+            dot.edge(str(id(node.parent)), str(id(node)))
+
+    # 3. Group nodes by level to enforce rank, and add threshold labels
     nodes_by_timestep = defaultdict(list)
     for node in tree.all_nodes:
         nodes_by_timestep[node.timestep].append(node)
-
+    
     pruning_history_map = {h['timestep']: h for h in getattr(tree, 'pruning_history', [])}
 
-    max_timestep = max(nodes_by_timestep.keys()) if nodes_by_timestep else 0
-
-    for i in range(max_timestep + 1):
+    for i in sorted(nodes_by_timestep.keys()):
         with dot.subgraph(name=f'rank_{i}') as s:
             s.attr(rank='same')
-            
             # Add invisible node for threshold label
             threshold_info = pruning_history_map.get(i)
             if threshold_info:
-                label = (f"Threshold: {threshold_info['final_threshold']:.2f}\n" 
+                label = (f"Threshold @ T={i}: {threshold_info['final_threshold']:.2f}\n" 
                          f"(Rel: {threshold_info['relative_threshold']:.2f}, " 
                          f"Depth: {threshold_info['depth_threshold']:.2f})")
                 s.node(f'level_{i}_info', label=label, shape='plaintext', fontsize='10')
+            # Add actual nodes to the rank group
+            for node in nodes_by_timestep[i]:
+                s.node(str(id(node)))
 
-            nodes_in_level = nodes_by_timestep[i]
-            clusters = defaultdict(list)
-            # Group nodes by cluster_id, handle unclustered nodes
-            unclustered_nodes = []
-            for node in nodes_in_level:
-                if node.cluster_id:
-                    clusters[node.cluster_id].append(node)
-                elif node.parent is not None: # Don't put root in unclustered
-                    unclustered_nodes.append(node)
-            
-            # Draw unclustered nodes for this level
-            for node in unclustered_nodes:
-                add_node_to_graph(s, node)
+    # 4. Group nodes by cluster and draw boxes
+    clusters = defaultdict(list)
+    for node in tree.all_nodes:
+        if node.cluster_id:
+            clusters[node.cluster_id].append(node)
 
-            # Draw clustered nodes for this level
-            for cluster_id, nodes_in_cluster in clusters.items():
-                with s.subgraph(name=f'cluster_{cluster_id}') as c:
-                    c.attr(label=f'Cluster\n{cluster_id}', style='rounded', color='black')
-                    for node in nodes_in_cluster:
-                        add_node_to_graph(c, node)
-    
-    # Add root node separately for definite top placement
-    add_node_to_graph(dot, tree.root)
-
-    # Add all edges between nodes
-    for node_id, node in nodes_by_id.items():
-        if node.parent:
-            parent_id = str(id(node.parent))
-            dot.edge(parent_id, str(node_id))
+    for cluster_id, nodes_in_cluster in clusters.items():
+        with dot.subgraph(name=f'cluster_{cluster_id}') as c:
+            c.attr(label=f'Cluster\n{cluster_id}', color='black', style='rounded')
+            for node in nodes_in_cluster:
+                c.node(str(id(node))) # Add existing node to cluster subgraph
 
 def add_node_to_graph(graph, node):
     """Adds a single node to the graph with appropriate styling."""
