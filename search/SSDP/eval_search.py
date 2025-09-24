@@ -8,7 +8,7 @@ import os
 class Node:
     def __init__(self, content, confidence, parent, timestep, tree, is_leaf=False):
         self.content = content
-        self.confidence = confidence
+        self.confidence = confidence # Base confidence from policy
         self.parent = parent
         self.children = []
         self.timestep = timestep
@@ -17,11 +17,13 @@ class Node:
         self.embedding = None
         self.similarity_bonus = 0
         self.diversity_reward = 0
-        self.parent_score = parent.score if parent else 0
         self.score = 0
+        self.current_node_score = 0
+        self.cluster_id = None
+        self.is_representative = False
 
     def get_depth(self):
-        return len(self.return_path()) + 1
+        return self.timestep
 
     def return_path(self):
         if self.content is None:
@@ -33,16 +35,26 @@ class Node:
     def print_path(self):
         return "".join(self.return_path())
 
-    def update_score(self):
-        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
+    def calculate_current_node_score(self):
+        self.current_node_score = self.confidence + self.similarity_bonus + self.diversity_reward
 
 class Cluster:
     def __init__(self, nodes):
         self.nodes = sorted(nodes, key=lambda x: x.confidence, reverse=True)
         self.representative = self.nodes[0]
-        self.similarity_bonus = sum(n.confidence for n in self.nodes[1:])
+        
+        depth = self.representative.get_depth()
+        dynamic_factor = depth * 0.0 # SIMILARITY_BONUS_SLOPE is 0.0
+        
+        other_nodes = self.nodes[1:]
+        if other_nodes:
+            average_confidence = sum(n.confidence for n in other_nodes) / len(other_nodes)
+            self.similarity_bonus = dynamic_factor * average_confidence
+        else:
+            self.similarity_bonus = 0
+
         self.representative.similarity_bonus = self.similarity_bonus
-        self.representative.update_score()
+        self.representative.calculate_current_node_score()
 
     @property
     def score(self):
@@ -53,10 +65,12 @@ class Tree:
         self.question = question
         self.answer = answer
         self.root = Node(None, 1.0, None, 0, self)
-        self.root.update_score()
+        self.root.calculate_current_node_score()
+        self.root.score = self.root.current_node_score
         self.all_nodes = [self.root]
         self.terminal_nodes = []
-        self.beam = [self.root]
+        self.window = [self.root]
+        self.pruning_history = []
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
@@ -130,7 +144,7 @@ def main(results_file_path):
             
             best_node = None
             if problem.terminal_nodes:
-                best_node = max(problem.terminal_nodes, key=lambda node: node.score)
+                best_node = max(problem.terminal_nodes, key=lambda node: (node.score, -node.timestep))
             
             if best_node:
                 generated_answer_text = extract_answer(best_node.print_path())
