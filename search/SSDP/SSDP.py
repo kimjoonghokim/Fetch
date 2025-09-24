@@ -99,7 +99,6 @@ class Node:
         self.embedding = None
         self.similarity_bonus = 0
         self.diversity_reward = 0
-        self.parent_score = parent.score if parent else 0
         self.score = 0
         self.cluster_id = None
         self.is_representative = False
@@ -118,7 +117,11 @@ class Node:
         return "".join(self.return_path())
 
     def update_score(self):
-        self.score = self.confidence + self.similarity_bonus + self.diversity_reward + self.parent_score
+        current_node_score = self.confidence + self.similarity_bonus + self.diversity_reward
+        if self.parent:
+            self.score = (self.parent.score * self.timestep + current_node_score) / (self.timestep + 1)
+        else:
+            self.score = current_node_score
 
 class Cluster:
     def __init__(self, nodes):
