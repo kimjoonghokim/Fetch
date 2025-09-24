@@ -271,6 +271,17 @@ class Tree:
                 rep.diversity_reward += decaying_reward
             rep.update_score()
 
+        # Normalize scores
+        scores = [rep.score for rep in representatives]
+        min_score = min(scores)
+        max_score = max(scores)
+        if max_score > 0:
+            for rep in representatives:
+                rep.score = (rep.score - min_score) / max_score
+        else:
+            for rep in representatives:
+                rep.score = 0
+
         # 5. Keep top N representatives
         representatives.sort(key=lambda x: x.score, reverse=True)
         top_representatives = representatives[:N]
