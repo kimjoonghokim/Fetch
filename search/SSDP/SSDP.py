@@ -8,7 +8,9 @@ from tqdm import tqdm
 import time
 from dotenv import load_dotenv
 import subprocess
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
+from collections import defaultdict
 
 # Load environment variables
 load_dotenv(dotenv_path='../experiments_config.env')
@@ -27,7 +29,7 @@ policy_fpath = os.getenv("POLICY_MODEL_PATH")
 # SSDP Parameters from README
 B = int(os.getenv("SSDP_B", 15))  # Batch Expansion
 N = int(os.getenv("SSDP_N", 5))   # Dynamic Window Width
-ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold
+ALPHA = float(os.getenv("SSDP_ALPHA", 0.8)) # Relative-to-leader threshold (DEACTIVATED)
 BETA = float(os.getenv("SSDP_BETA", 0.1)) # Depth-scaled minimum base
 GAMMA = float(os.getenv("SSDP_GAMMA", 0.05)) # Depth-scaled minimum increment
 DELTA = float(os.getenv("SSDP_DELTA", 0.01)) # Terminal convergence threshold
@@ -35,9 +37,10 @@ MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 50))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
 TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.6))
 DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
-INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.4))
-DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.95))
-
+INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.2))
+DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.9))
+SIMILARITY_BONUS_SLOPE = float(os.getenv("SSDP_SIMILARITY_BONUS_SLOPE", 0.1))
+CLUSTER_GLOBALLY = bool(os.getenv("SSDP_CLUSTER_GLOBALLY", True))
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
 
@@ -94,15 +97,15 @@ class Node:
         self.tree = tree
         self.is_leaf = is_leaf
         self.embedding = None
-        
-        # SSDP scores
         self.similarity_bonus = 0
         self.diversity_reward = 0
         self.parent_score = parent.score if parent else 0
         self.score = 0
+        self.cluster_id = None
+        self.is_representative = False
 
     def get_depth(self):
-        return len(self.return_path()) + 1
+        return self.timestep
 
     def return_path(self):
         if self.content is None:
@@ -121,7 +124,11 @@ class Cluster:
     def __init__(self, nodes):
         self.nodes = sorted(nodes, key=lambda x: x.confidence, reverse=True)
         self.representative = self.nodes[0]
-        self.similarity_bonus = sum(n.confidence for n in self.nodes[1:])
+        
+        depth = self.representative.get_depth()
+        dynamic_factor = depth * SIMILARITY_BONUS_SLOPE
+        
+        self.similarity_bonus = dynamic_factor * sum(n.confidence for n in self.nodes[1:])
         self.representative.similarity_bonus = self.similarity_bonus
         self.representative.update_score()
 
@@ -133,13 +140,12 @@ class Tree:
     def __init__(self, question, answer):
         self.question = question
         self.answer = answer
-        self.root = Node(None, 1.0, None, 0, self) # Start with confidence 1
+        self.root = Node(None, 1.0, None, 0, self)
         self.root.update_score()
         self.all_nodes = [self.root]
         self.terminal_nodes = []
         self.window = [self.root]
-        
-        # Token tracking
+        self.pruning_history = []
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
@@ -150,7 +156,8 @@ class Tree:
 
     def add_node(self, content, confidence, parent, timestep, is_leaf=False):
         node = Node(content, confidence, parent, timestep, self, is_leaf)
-        parent.children.append(node)
+        if parent:
+            parent.children.append(node)
         self.all_nodes.append(node)
         if is_leaf:
             self.terminal_nodes.append(node)
@@ -158,13 +165,12 @@ class Tree:
 
     def ssdp_step(self):
         if not self.window:
-            return False # End of search
+            return False
 
-        # 1. Generate B candidates in total for the current window, proportionally to score
+        # 1. Generate all candidate nodes
         candidates = []
         window_scores = [n.score for n in self.window]
         total_window_score = sum(window_scores)
-
         if total_window_score > 0:
             allocations = [int(B * score / total_window_score) for score in window_scores]
             remainder = B - sum(allocations)
@@ -190,7 +196,7 @@ class Tree:
                     confidence = np.mean([p for p in logprobs.get('token_logprobs') if p is not None])
                     confidence = np.exp(confidence)
                 else:
-                    confidence = 0.5 # Fallback confidence
+                    confidence = 0.5
                 
                 new_node = self.add_node(next_step, confidence, node, node.timestep + 1, assert_end(next_step))
                 fix_value(new_node)
@@ -200,50 +206,90 @@ class Tree:
         if not candidates:
             return False
 
-        # 2. Get embeddings and labels for all candidates
+        # 2. Get embeddings for all candidates
         texts = [c.content for c in candidates]
-        labels, embeddings, usage = call_esm(texts)
+        global_labels, embeddings, usage = call_esm(texts)
         self.embedding_prompt_tokens += usage.get("prompt_tokens", 0)
         self.embedding_completion_tokens += usage.get("completion_tokens", 0)
         self.embedding_total_tokens += usage.get("total_tokens", 0)
         for node, emb in zip(candidates, embeddings):
             node.embedding = emb
 
-        # 3. Cluster nodes based on labels from the server
-        clusters_map = {}
-        for node, label in zip(candidates, labels):
-            if label not in clusters_map:
-                clusters_map[label] = []
-            clusters_map[label].append(node)
-        
-        clusters = [Cluster(nodes) for nodes in clusters_map.values()]
+        # 3. Cluster nodes based on strategy
+        clusters = []
+        if CLUSTER_GLOBALLY:
+            clusters_map = defaultdict(list)
+            for node, label in zip(candidates, global_labels):
+                clusters_map[label].append(node)
+            clusters = [Cluster(nodes) for nodes in clusters_map.values()]
+        else: # Sibling-only clustering
+            parent_to_children = defaultdict(list)
+            for node in candidates:
+                parent_to_children[node.parent].append(node)
+            
+            for parent_node, siblings in parent_to_children.items():
+                if len(siblings) < 2:
+                    if siblings:
+                        clusters.append(Cluster(siblings))
+                    continue
+                
+                sibling_embeddings = np.array([s.embedding for s in siblings])
+                similarity_matrix = cosine_similarity(sibling_embeddings)
+                clustering = AgglomerativeClustering(n_clusters=None, metric='precomputed', linkage='average', distance_threshold=DISTANCE).fit(1 - similarity_matrix)
+                
+                sibling_clusters_map = defaultdict(list)
+                for node, label in zip(siblings, clustering.labels_):
+                    sibling_clusters_map[label].append(node)
+                
+                for nodes_in_cluster in sibling_clusters_map.values():
+                    clusters.append(Cluster(nodes_in_cluster))
+
+        # Tag nodes with cluster info for visualization
+        for i, cluster in enumerate(clusters):
+            if not cluster.nodes:
+                continue
+            cluster_id = f"T{cluster.nodes[0].timestep}_C{i}"
+            for node in cluster.nodes:
+                node.cluster_id = cluster_id
+            cluster.representative.is_representative = True
 
         # 4. Score representatives and apply diversity reward
         if not clusters:
-            return False
+            self.window = []
+            return True
             
-        clusters.sort(key=lambda x: x.score, reverse=True)
-        leader = clusters[0]
+        representatives = [c.representative for c in clusters]
+        representatives.sort(key=lambda x: x.score, reverse=True)
+        leader = representatives[0]
         
-        for cluster in clusters[1:]:
-            leader_emb = np.array(leader.representative.embedding).reshape(1, -1)
-            cluster_emb = np.array(cluster.representative.embedding).reshape(1, -1)
+        for rep in representatives[1:]:
+            leader_emb = np.array(leader.embedding).reshape(1, -1)
+            cluster_emb = np.array(rep.embedding).reshape(1, -1)
             if cosine_similarity(leader_emb, cluster_emb)[0][0] < (1 - DISTANCE):
-                depth = cluster.representative.get_depth()
+                depth = rep.get_depth()
                 decaying_reward = INITIAL_DIVERSITY_REWARD * (DIVERSITY_DECAY_FACTOR ** depth)
-                cluster.representative.diversity_reward += decaying_reward
-            cluster.representative.update_score()
+                rep.diversity_reward += decaying_reward
+            rep.update_score()
 
-        # 5. Keep top N clusters
-        top_clusters = clusters[:N]
+        # 5. Keep top N representatives
+        representatives.sort(key=lambda x: x.score, reverse=True)
+        top_representatives = representatives[:N]
 
-        # 6. Hybrid Pruning
+        # 6. Pruning (with corrected rule)
         leader_score = leader.score
-        depth = leader.representative.get_depth()
-        min_score_d = BETA + GAMMA * depth
-        pruning_threshold = max(ALPHA * leader_score, min_score_d)
+        event_timestep = leader.timestep
+        min_score_d = BETA + GAMMA * event_timestep
+        pruning_threshold = min_score_d # ALPHA rule removed
 
-        self.window = [c.representative for c in top_clusters if c.score >= pruning_threshold]
+        self.pruning_history.append({
+            'timestep': event_timestep,
+            'leader_score': leader_score,
+            'relative_threshold': ALPHA * leader_score, # Still record for analysis
+            'depth_threshold': min_score_d,
+            'final_threshold': pruning_threshold
+        })
+
+        self.window = [rep for rep in top_representatives if rep.score >= pruning_threshold]
 
         # 7. Check stopping criteria
         if self.check_stopping_criteria():
@@ -252,31 +298,17 @@ class Tree:
         return True
 
     def check_stopping_criteria(self):
-        # 1. High-confidence terminal node (Commented out as it can be too aggressive)
-        # if any(n.is_leaf and n.score >= 0.9 for n in self.all_nodes):
-        #     return True
-        # 2. Terminal convergence
-        if len(self.terminal_nodes) > 1:
-            best_scores = sorted([n.score for n in self.terminal_nodes], reverse=True)
-            if best_scores[0] - best_scores[1] < DELTA:
-                return True
-        # 3. Max terminal nodes reached
         if len(self.terminal_nodes) >= MAX_TERMINAL_NODES:
             return True
-        # 4. Window collapse (simplified)
-        if len(self.window) <= 1:
-            # A more complete implementation would track this over L consecutive levels
-            pass
+        if len(self.window) == 0:
+            return True
         return False
-
 
 def worker(tree):
     start_time = time.time()
-    
-    for i in range(20): # Max depth
+    for i in range(20):
         if not tree.ssdp_step():
             break
-            
     tree.runtime_seconds = time.time() - start_time
     return tree
 
@@ -302,7 +334,6 @@ if __name__ == "__main__":
 
     total_runtime = time.time() - start_time
     
-    # Aggregate metrics
     total_prompt_tokens = sum([p.prompt_tokens for p in problems])
     total_completion_tokens = sum([p.completion_tokens for p in problems])
     total_tokens = sum([p.total_tokens for p in problems])
@@ -334,7 +365,7 @@ if __name__ == "__main__":
     with open(output_fpath, "wb") as f:
         pickle.dump(final_data, f)
 
-    print(f"\n=== SSDP Search Complete ===")
+    print(f"=== SSDP Search Complete ===")
     print(f"Results saved to {output_fpath}")
 
     print(f"\nRunning evaluation script on {output_fpath}...")
