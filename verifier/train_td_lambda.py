@@ -43,14 +43,54 @@ config = AutoConfig.from_pretrained(model_name)
 # config.classifier_dropout = 0.1
 tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="right")
 
+# Model family detection
+def get_model_family(model_path):
+    """Detect model family from the model path"""
+    model_path_lower = model_path.lower()
+    if "qwen" in model_path_lower:
+        return "qwen"
+    elif "llama" in model_path_lower:
+        return "llama"
+    elif "gemma" in model_path_lower:
+        return "gemma"
+    else:
+        return "unknown"
+
+model_family = get_model_family(model_name)
+print(f"Detected model family: {model_family} for model: {model_name}")
+
 if config.num_labels != 1:
     config.num_labels = 1
 
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-class MyLlamaForTokenClassification(LlamaForTokenClassification):
-    def __init__(self, config):
-        super().__init__(config)
-        self.cnt = 0 # ugly implementation of lr balancing, current steps = self.cnt / accum steps
+
+# Model-specific classification class selection
+if model_family == "qwen":
+    class MyQwenForTokenClassification(Qwen2ForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+            self.cnt = 0 # ugly implementation of lr balancing, current steps = self.cnt / accum steps
+    model_class = MyQwenForTokenClassification
+elif model_family == "llama":
+    class MyLlamaForTokenClassification(LlamaForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+            self.cnt = 0 # ugly implementation of lr balancing, current steps = self.cnt / accum steps
+    model_class = MyLlamaForTokenClassification
+else:
+    # Default to Llama for unknown models
+    class MyLlamaForTokenClassification(LlamaForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+            self.cnt = 0 # ugly implementation of lr balancing, current steps = self.cnt / accum steps
+    model_class = MyLlamaForTokenClassification
+
+# Use the appropriate model class
+if model_family == "qwen":
+    class MyQwenForTokenClassification(Qwen2ForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+            self.cnt = 0 # ugly implementation of lr balancing, current steps = self.cnt / accum steps
 
     def forward(self, input_ids, attention_mask, labels, **kwargs):
         outputs = super().forward(input_ids, attention_mask, labels=None, return_dict=True, **kwargs)
@@ -134,8 +174,21 @@ def add_eos_token(text):
 input_column = "text"
 label_column = "label"
 def preprocess_function(examples):
-    # model depend
-    split_token_ids = [16533, 25] # Llama
+    # Model-specific token IDs
+    if model_family == "qwen":
+        # Qwen-specific token IDs - encode "Answer:" pattern
+        split_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+        if len(split_token_ids) > 0:
+            # Add newline token ID if not already included
+            newline_id = tokenizer.encode("\n", add_special_tokens=False)
+            if len(newline_id) > 0:
+                split_token_ids.extend(newline_id)
+    elif model_family == "llama":
+        split_token_ids = [16533, 25] # Original Llama tokens
+    else:
+        # Default/fallback
+        split_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+    
     inputs, targets = [], []
     for i in range(len(examples[input_column])):
         inputs.append(add_eos_token(examples[input_column][i]))

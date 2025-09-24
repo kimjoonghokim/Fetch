@@ -1,0 +1,41 @@
+--- Loading results from: test_gsm8k_beamsearch_b5_t0.8.pkl ---
+
+==================================================
+         Beam Search Evaluation         
+==================================================
+
+--- Performance ---
+Total Problems:      1319
+Correct Solutions:   855
+Unfinished Problems: 0
+Accuracy:            64.82%
+Completion Rate:     100.00%
+--------------------------------------------------
+--- Runtime ---
+Total Runtime:       13792.88 seconds
+Average per Problem: 733.11 seconds
+Min per Problem:     14.78 seconds
+Max per Problem:     8158.04 seconds
+Median per Problem:  288.74 seconds
+--------------------------------------------------
+--- Token Usage ---
+Total Tokens Used:   157708214
+
+Policy Server:
+  - Total Tokens:    85244341
+  - Prompt Tokens:   79910555
+  - Completion Tokens: 5333786
+
+Verifier Server:
+  - Total Tokens:    72463873
+  - Prompt Tokens:   81960999
+  - Completion Tokens: 0
+
+Embedding Server:
+  - Total Tokens:    0
+  - Prompt Tokens:   0
+  - Completion Tokens: 0
+
+Verifier Contribution: 45.9%
+Average per Problem: 119566.50 tokens
+==================================================

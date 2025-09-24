@@ -43,23 +43,70 @@ config = AutoConfig.from_pretrained(model_name)
 # config.classifier_dropout = 0.2
 tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="right")
 
+# Model family detection
+def get_model_family(model_path):
+    """Detect model family from the model path"""
+    model_path_lower = model_path.lower()
+    if "qwen" in model_path_lower:
+        return "qwen"
+    elif "llama" in model_path_lower:
+        return "llama"
+    elif "gemma" in model_path_lower:
+        return "gemma"
+    else:
+        return "unknown"
+
+model_family = get_model_family(model_name)
+print(f"Detected model family: {model_family} for model: {model_name}")
+
 if config.num_labels != 1:
     config.num_labels = 1
 
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-class MyLlamaForTokenClassification(LlamaForTokenClassification):
-    def __init__(self, config):
-        super().__init__(config)
 
-    def forward(self, input_ids, attention_mask, labels, **kwargs):
-        outputs = super().forward(input_ids, attention_mask, labels=None, return_dict=True, **kwargs)
-        label_mask = torch.logical_and(attention_mask != 0, labels != 0)
-        logits = outputs.logits.squeeze()
-        loss_fct = MSELoss()
-        outputs["loss"] = loss_fct(logits[label_mask], labels[label_mask].to(torch.float16))
-        return outputs
+# Model-specific classification class selection
+if model_family == "qwen":
+    class MyQwenForTokenClassification(Qwen2ForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
 
-model = MyLlamaForTokenClassification.from_pretrained(model_name, config=config, torch_dtype=torch.float16)
+        def forward(self, input_ids, attention_mask, labels, **kwargs):
+            outputs = super().forward(input_ids, attention_mask, labels=None, return_dict=True, **kwargs)
+            label_mask = torch.logical_and(attention_mask != 0, labels != 0)
+            logits = outputs.logits.squeeze()
+            loss_fct = MSELoss()
+            outputs["loss"] = loss_fct(logits[label_mask], labels[label_mask].to(torch.float16))
+            return outputs
+    model_class = MyQwenForTokenClassification
+elif model_family == "llama":
+    class MyLlamaForTokenClassification(LlamaForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+
+        def forward(self, input_ids, attention_mask, labels, **kwargs):
+            outputs = super().forward(input_ids, attention_mask, labels=None, return_dict=True, **kwargs)
+            label_mask = torch.logical_and(attention_mask != 0, labels != 0)
+            logits = outputs.logits.squeeze()
+            loss_fct = MSELoss()
+            outputs["loss"] = loss_fct(logits[label_mask], labels[label_mask].to(torch.float16))
+            return outputs
+    model_class = MyLlamaForTokenClassification
+else:
+    # Default to Llama for unknown models
+    class MyLlamaForTokenClassification(LlamaForTokenClassification):
+        def __init__(self, config):
+            super().__init__(config)
+
+        def forward(self, input_ids, attention_mask, labels, **kwargs):
+            outputs = super().forward(input_ids, attention_mask, labels=None, return_dict=True, **kwargs)
+            label_mask = torch.logical_and(attention_mask != 0, labels != 0)
+            logits = outputs.logits.squeeze()
+            loss_fct = MSELoss()
+            outputs["loss"] = loss_fct(logits[label_mask], labels[label_mask].to(torch.float16))
+            return outputs
+    model_class = MyLlamaForTokenClassification
+
+model = model_class.from_pretrained(model_name, config=config, torch_dtype=torch.float16)
 
 if config.pad_token_id is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
@@ -91,8 +138,21 @@ def add_eos_token(text):
 input_column = "text"
 label_column = "label"
 def preprocess_function(examples):
-    # model depend
-    split_token_ids = [16533, 25] # Llama
+    # Model-specific token IDs
+    if model_family == "qwen":
+        # Qwen-specific token IDs - encode "Answer:" pattern
+        split_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+        if len(split_token_ids) > 0:
+            # Add newline token ID if not already included
+            newline_id = tokenizer.encode("\n", add_special_tokens=False)
+            if len(newline_id) > 0:
+                split_token_ids.extend(newline_id)
+    elif model_family == "llama":
+        split_token_ids = [16533, 25] # Original Llama tokens
+    else:
+        # Default/fallback
+        split_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+    
     inputs, targets = [], []
     for i in range(len(examples[input_column])):
         inputs.append(add_eos_token(examples[input_column][i]))
