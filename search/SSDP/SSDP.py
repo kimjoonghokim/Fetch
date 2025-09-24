@@ -40,7 +40,7 @@ DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
 INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.2))
 DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.9))
 SIMILARITY_BONUS_SLOPE = float(os.getenv("SSDP_SIMILARITY_BONUS_SLOPE", 0.1))
-CLUSTER_GLOBALLY = bool(os.getenv("SSDP_CLUSTER_GLOBALLY", True))
+CLUSTER_GLOBALLY = bool(os.getenv("SSDP_CLUSTER_GLOBALLY", False))
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
 
