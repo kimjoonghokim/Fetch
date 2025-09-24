@@ -100,6 +100,7 @@ class Node:
         self.similarity_bonus = 0
         self.diversity_reward = 0
         self.score = 0
+        self.current_node_score = 0
         self.cluster_id = None
         self.is_representative = False
 
@@ -116,12 +117,8 @@ class Node:
     def print_path(self):
         return "".join(self.return_path())
 
-    def update_score(self):
-        current_node_score = self.confidence + self.similarity_bonus + self.diversity_reward
-        if self.parent:
-            self.score = (self.parent.score * self.timestep + current_node_score) / (self.timestep + 1)
-        else:
-            self.score = current_node_score
+    def calculate_current_node_score(self):
+        self.current_node_score = self.confidence + self.similarity_bonus + self.diversity_reward
 
 class Cluster:
     def __init__(self, nodes):
@@ -139,7 +136,7 @@ class Cluster:
             self.similarity_bonus = 0
 
         self.representative.similarity_bonus = self.similarity_bonus
-        self.representative.update_score()
+        self.representative.calculate_current_node_score()
 
     @property
     def score(self):
@@ -150,7 +147,8 @@ class Tree:
         self.question = question
         self.answer = answer
         self.root = Node(None, 1.0, None, 0, self)
-        self.root.update_score()
+        self.root.calculate_current_node_score()
+        self.root.score = self.root.current_node_score
         self.all_nodes = [self.root]
         self.terminal_nodes = []
         self.window = [self.root]
@@ -262,15 +260,19 @@ class Tree:
                 node.cluster_id = cluster_id
             cluster.representative.is_representative = True
 
-        # 4. Score representatives and apply diversity reward
+        # 4. Score representatives
         if not clusters:
             self.window = []
             return True
             
         representatives = [c.representative for c in clusters]
-        representatives.sort(key=lambda x: x.score, reverse=True)
+
+        # The intrinsic score for each representative's similarity bonus is already calculated in Cluster.__init__
+        # Now we sort by that to find the leader before adding diversity bonus
+        representatives.sort(key=lambda x: x.current_node_score, reverse=True)
         leader = representatives[0]
         
+        # Apply diversity reward to others and recalculate their intrinsic score
         for rep in representatives[1:]:
             leader_emb = np.array(leader.embedding).reshape(1, -1)
             cluster_emb = np.array(rep.embedding).reshape(1, -1)
@@ -278,17 +280,21 @@ class Tree:
                 depth = rep.get_depth()
                 decaying_reward = INITIAL_DIVERSITY_REWARD * (DIVERSITY_DECAY_FACTOR ** depth)
                 rep.diversity_reward += decaying_reward
-            rep.update_score()
+                rep.calculate_current_node_score() # Recalculate with diversity bonus
 
-        # Normalize scores
-        scores = [rep.score for rep in representatives]
-        max_score = max(scores)
-        if max_score > 0:
+        # Normalize the intrinsic scores of all representatives
+        rep_current_scores = [rep.current_node_score for rep in representatives]
+        max_current_score = max(rep_current_scores) if rep_current_scores else 0
+        if max_current_score > 0:
             for rep in representatives:
-                rep.score = rep.score / max_score
-        else:
-            for rep in representatives:
-                rep.score = 0
+                rep.current_node_score /= max_current_score
+
+        # Now calculate the final path average score for each representative
+        for rep in representatives:
+            if rep.parent:
+                rep.score = (rep.parent.score * rep.timestep + rep.current_node_score) / (rep.timestep + 1)
+            else:
+                rep.score = rep.current_node_score
 
         # 5. Keep top N representatives
         representatives.sort(key=lambda x: x.score, reverse=True)
