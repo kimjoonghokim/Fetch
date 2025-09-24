@@ -37,9 +37,9 @@ MAX_TERMINAL_NODES = int(os.getenv("SSDP_MAX_TERMINAL_NODES", 50))
 L_CONSECUTIVE_COLLAPSE = int(os.getenv("SSDP_L_CONSECUTIVE_COLLAPSE", 3))
 TEMPERATURE = float(os.getenv("SSDP_TEMPERATURE", 0.8))
 DISTANCE = float(os.getenv("SSDP_DISTANCE", 0.1))
-INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.2))
+INITIAL_DIVERSITY_REWARD = float(os.getenv("SSDP_INITIAL_DIVERSITY_REWARD", 0.0))
 DIVERSITY_DECAY_FACTOR = float(os.getenv("SSDP_DIVERSITY_DECAY_FACTOR", 0.9))
-SIMILARITY_BONUS_SLOPE = float(os.getenv("SSDP_SIMILARITY_BONUS_SLOPE", 0.1))
+SIMILARITY_BONUS_SLOPE = float(os.getenv("SSDP_SIMILARITY_BONUS_SLOPE", 0.0))
 CLUSTER_GLOBALLY = bool(os.getenv("SSDP_CLUSTER_GLOBALLY", False))
 
 output_fpath = f"{dataset_type}_{dataset_name}_ssdp_b{B}_n{N}_t{TEMPERATURE}.pkl"
@@ -128,7 +128,13 @@ class Cluster:
         depth = self.representative.get_depth()
         dynamic_factor = depth * SIMILARITY_BONUS_SLOPE
         
-        self.similarity_bonus = dynamic_factor * sum(n.confidence for n in self.nodes[1:])
+        other_nodes = self.nodes[1:]
+        if other_nodes:
+            average_confidence = sum(n.confidence for n in other_nodes) / len(other_nodes)
+            self.similarity_bonus = dynamic_factor * average_confidence
+        else:
+            self.similarity_bonus = 0
+
         self.representative.similarity_bonus = self.similarity_bonus
         self.representative.update_score()
 
