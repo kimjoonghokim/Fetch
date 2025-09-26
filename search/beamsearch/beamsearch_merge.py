@@ -8,6 +8,7 @@ from tqdm import tqdm
 import time
 from dotenv import load_dotenv
 import subprocess
+from string import Template
 
 LIMIT=50
 BUDGET=5
@@ -27,6 +28,8 @@ output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_merge_b{BUDGET}_t{TEMP
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
+# Load system prompt from experiments config
+system_prompt = os.getenv("SYSTEM_PROMPT", "")
 
 # task dependent
 def assert_end(text):
@@ -35,6 +38,28 @@ def assert_end(text):
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
 MAX_LEN_PER_STEP = 256
+
+def wrap_query_for_policy(query, path):
+    question_part = "\n\n" if system_prompt else ""
+    return POLICY_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path
+    )
+
+def wrap_query_for_value(query, path):
+    question_part = "\n\n" if system_prompt else ""
+    return VALUE_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path
+    )
+
+POLICY_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
+VALUE_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
+
 def fix_value(state):
     if state.parent is not None: # repeat
         if state.parent.content == state.content:
@@ -48,7 +73,7 @@ def fix_value(state):
 def call_policy(question, path):
     url = "http://127.0.0.1:8000/v1/completions"
     model = policy_fpath
-    query = f"Question: {question}\nAnswer:{path}"
+    query = wrap_query_for_policy(question, path)
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
             "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
     response =requests.post(url, json=pload)
@@ -59,7 +84,7 @@ def call_policy(question, path):
 
 def call_value(question, path):
     url = "http://127.0.0.1:8002/predict"
-    query = f"Question: {question}\nAnswer:{path}"
+    query = wrap_query_for_value(question, path)
     if query.endswith(tokenizer.eos_token):
         query = query[:-len(tokenizer.eos_token)] # this value is not trained like this
     pload ={"texts": [query]}

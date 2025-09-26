@@ -19,22 +19,40 @@ class ValueArgument:
     port=8002
 
 from string import Template
+from dotenv import load_dotenv
+import os
 
-POLICY_INSTRUCTION = Template("""Question: ${question}\nAnswer: ${path}""")
-VALUE_INSTRUCTION = Template("""Question: ${question}\nAnswer: ${path}""")
+# Load system prompt from experiments config
+load_dotenv(dotenv_path='../experiments_config.env')
+system_prompt = os.getenv("SYSTEM_PROMPT", "")
+
+POLICY_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
+VALUE_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
 
 # task dependent
 def assert_end(text):
     return True if text.split("\n")[-1].startswith("The answer is") else False
 
 def wrap_query_for_policy(query, path):
-    wrapped_query = POLICY_INSTRUCTION.substitute(question=query, path=path+"\n" if path else "")
+    question_part = "\n\n" if system_prompt else ""
+    wrapped_query = POLICY_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path+"\n" if path else ""
+    )
     if wrapped_query[-1] != "\n":
         wrapped_query = wrapped_query.strip()
     return wrapped_query
 
 def wrap_query_for_value(query, path):
-    wrapped_query = VALUE_INSTRUCTION.substitute(question=query, path=path+"\n" if path else "")
+    question_part = "\n\n" if system_prompt else ""
+    wrapped_query = VALUE_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path+"\n" if path else ""
+    )
     if wrapped_query[-1] != "\n":
         wrapped_query = wrapped_query.strip()
     if assert_end(wrapped_query):

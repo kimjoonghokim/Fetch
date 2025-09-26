@@ -8,6 +8,7 @@ from tqdm import tqdm
 import time
 from dotenv import load_dotenv
 import subprocess
+from string import Template
 
 LIMIT=50
 BUDGET=5
@@ -26,163 +27,71 @@ output_fpath = f"{dataset_type}_{dataset_name}_beamsearch_b{BUDGET}_t{TEMPERATUR
 load_dotenv(dotenv_path='../../server_config.env')
 policy_fpath = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 
+# Load system prompt from experiments config
+system_prompt = os.getenv("SYSTEM_PROMPT", "")
+
 # task dependent
 def assert_end(text):
     return True if "The answer is" in text else False
 
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
-
-# Model family detection for tokenizer-specific handling
-def get_model_family(model_path):
-    """Detect model family from the model path"""
-    model_path_lower = model_path.lower()
-    if "qwen" in model_path_lower:
-        return "qwen"
-    elif "llama" in model_path_lower:
-        return "llama"
-    elif "gemma" in model_path_lower:
-        return "gemma"
-    else:
-        return "unknown"
-
-model_family = get_model_family(policy_fpath)
-print(f"Detected model family: {model_family} for model: {policy_fpath}")
-
-# Model-specific token IDs and settings
-def get_model_specific_config(model_family, tokenizer):
-    """Get model-specific configuration"""
-    if model_family == "qwen":
-        # Qwen-specific token IDs - these may need adjustment based on the specific Qwen model
-        # Common Qwen patterns: Answer: token followed by newline
-        split_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
-        if len(split_token_ids) > 0:
-            # Add newline token ID if not already included
-            newline_id = tokenizer.encode("\n", add_special_tokens=False)
-            if len(newline_id) > 0:
-                split_token_ids.extend(newline_id)
-        return {
-            "split_token_ids": split_token_ids,
-            "end_pattern": "ĊĊ",  # Qwen newline pattern
-            "eos_handling": "standard"
-        }
-    elif model_family == "llama":
-        # Llama-specific configuration
-        return {
-            "split_token_ids": [16533, 25],  # Original Llama tokens
-            "end_pattern": "ĊĊ",  # Llama newline pattern
-            "eos_handling": "standard"
-        }
-    else:
-        # Default/fallback configuration
-        return {
-            "split_token_ids": tokenizer.encode("Answer:", add_special_tokens=False),
-            "end_pattern": "ĊĊ",
-            "eos_handling": "standard"
-        }
-
-model_config = get_model_specific_config(model_family, tokenizer)
-print(f"Using model config: {model_config}")
-
 MAX_LEN_PER_STEP = 256
+
+def wrap_query_for_policy(query, path):
+    question_part = "\n\n" if system_prompt else ""
+    return POLICY_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path
+    )
+
+def wrap_query_for_value(query, path):
+    question_part = "\n\n" if system_prompt else ""
+    return VALUE_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path
+    )
+
+POLICY_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
+VALUE_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
+
 def fix_value(state):
     if state.parent is not None: # repeat
         if state.parent.content == state.content:
             state.value = -1
     if state.content is not None and (len(state.content) == 0 or len(tokenizer.tokenize(state.content)) > MAX_LEN_PER_STEP): # too short or too long
         state.value = -1
-    # Model-specific EOS token handling
-    if model_config["eos_handling"] == "standard":
-        if state.content and state.content.endswith(tokenizer.eos_token) and not assert_end(state.content):
-            state.value = -1
+    if state.content.endswith(tokenizer.eos_token) and not assert_end(state.content):
+        state.value = -1
     return state
 
 def call_policy(question, path):
     url = "http://127.0.0.1:8000/v1/completions"
     model = policy_fpath
-    query = f"Question: {question}\nAnswer:{path}"
+    query = wrap_query_for_policy(question, path)
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
             "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
-    
-    try:
-        response = requests.post(url, json=pload)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        response_json = response.json()
-        
-        # Debug: print the response structure (commented out for cleaner output)
-        # print(f"API Response keys: {list(response_json.keys())}")
-        
-        # Check if response contains expected fields
-        if "choices" not in response_json:
-            print(f"Unexpected API response format: {response_json}")
-            # Try to handle different response formats
-            if "text" in response_json:
-                return response_json["text"], response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-            elif "output" in response_json:
-                return response_json["output"], response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-            else:
-                raise KeyError(f"API response missing 'choices' field: {response_json}")
-        
-        choice = response_json["choices"][0]
-        usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-        return choice["text"], usage
-        
-    except requests.exceptions.ConnectionError:
-        print(f"Error: Could not connect to policy server at {url}")
-        print("Make sure the policy server is running on port 8000")
-        raise
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP error from policy server: {e}")
-        print(f"Response content: {response.text if 'response' in locals() else 'No response'}")
-        raise
-    except KeyError as e:
-        print(f"KeyError in API response: {e}")
-        print(f"Full response: {response_json if 'response_json' in locals() else 'No response JSON'}")
-        raise
-    except Exception as e:
-        print(f"Unexpected error in call_policy: {e}")
-        raise
+    response =requests.post(url, json=pload)
+    response_json = response.json()
+    choice = response_json["choices"][0]
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return choice["text"], usage
 
 def call_value(question, path):
     url = "http://127.0.0.1:8002/predict"
-    query = f"Question: {question}\nAnswer:{path}"
-    # Model-specific EOS token handling
-    if model_config["eos_handling"] == "standard":
-        if query.endswith(tokenizer.eos_token):
-            query = query[:-len(tokenizer.eos_token)] # this value is not trained like this
+    query = wrap_query_for_value(question, path)
+    if query.endswith(tokenizer.eos_token):
+        query = query[:-len(tokenizer.eos_token)] # this value is not trained like this
     pload ={"texts": [query]}
-    
-    try:
-        response = requests.post(url, json=pload)
-        response.raise_for_status()
-        response_json = response.json()
-        
-        # Debug: print the response structure (commented out for cleaner output)
-        # print(f"Verifier API Response keys: {list(response_json.keys())}")
-        
-        if "values" not in response_json:
-            print(f"Unexpected verifier API response format: {response_json}")
-            raise KeyError(f"Verifier API response missing 'values' field: {response_json}")
-        
-        value = (min(max(response_json["values"][0], -1.), 1.) + 1.) / 2
-        usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-        return value, usage
-        
-    except requests.exceptions.ConnectionError:
-        print(f"Error: Could not connect to verifier server at {url}")
-        print("Make sure the verifier server is running on port 8002")
-        raise
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP error from verifier server: {e}")
-        print(f"Response content: {response.text if 'response' in locals() else 'No response'}")
-        raise
-    except KeyError as e:
-        print(f"KeyError in verifier API response: {e}")
-        print(f"Full response: {response_json if 'response_json' in locals() else 'No response JSON'}")
-        raise
-    except Exception as e:
-        print(f"Unexpected error in call_value: {e}")
-        raise
+    response =requests.post(url, json=pload)
+    response_json = response.json()
+    value = (min(max(response_json["values"][0], -1.), 1.) + 1.) / 2
+    usage = response_json.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return value, usage
 
 #### Search Tree ####
 class Node:
@@ -285,17 +194,9 @@ def worker(tree):
 
 start_time = time.time()
 
-print(f"\n🚀 Starting beamsearch with {len(problems)} problems...")
-print(f"📊 Using {model_family} model: {policy_fpath}")
-print(f"🔧 Beam size: {BEAM}, Budget: {BUDGET}, Temperature: {TEMPERATURE}")
-print("=" * 60)
-
 pool = multiprocessing.Pool(80)
-problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems), desc="Processing problems", unit="problem"))    
+problems = list(tqdm(pool.imap_unordered(worker, problems), total=len(problems)))    
 pool.close()
-
-print("=" * 60)
-print("✅ Beamsearch completed!")
 
 total_runtime = time.time() - start_time
 

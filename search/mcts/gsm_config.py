@@ -20,6 +20,10 @@ load_dotenv(dotenv_path='../../server_config.env') # path to the policy model
 MODEL_PATH = os.getenv("POLICY_MODEL_PATH") # path to the policy model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
+# Load system prompt from experiments config
+load_dotenv(dotenv_path='../experiments_config.env')
+system_prompt = os.getenv("SYSTEM_PROMPT", "")
+
 class PolicyArgument:
     url='127.0.0.1'
     port=8000
@@ -37,16 +41,28 @@ class MergeArgument:
 def assert_end(text):
     return True if text.strip().split("\n")[-1].startswith("The answer is") else False
 
-POLICY_INSTRUCTION = Template("""Question: ${question}\nAnswer: ${path}""")
+POLICY_INSTRUCTION = Template("""${system_prompt}${question_part}Question: ${question}\nAnswer: ${path}""")
 
 def wrap_query_for_policy(query, path):
-    wrapped_query = POLICY_INSTRUCTION.substitute(question=query, path=path+"\n" if path else "")
+    question_part = "\n\n" if system_prompt else ""
+    wrapped_query = POLICY_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path+"\n" if path else ""
+    )
     if wrapped_query[-1] != "\n":
         wrapped_query = wrapped_query.strip()
     return wrapped_query
 
 def wrap_query_for_value(query, path):
-    wrapped_query = POLICY_INSTRUCTION.substitute(question=query, path=path+"\n" if path else "")
+    question_part = "\n\n" if system_prompt else ""
+    wrapped_query = POLICY_INSTRUCTION.substitute(
+        system_prompt=system_prompt, 
+        question_part=question_part,
+        question=query, 
+        path=path+"\n" if path else ""
+    )
     if wrapped_query[-1] != "\n":
         wrapped_query = wrapped_query.strip()
     if assert_end(wrapped_query):
