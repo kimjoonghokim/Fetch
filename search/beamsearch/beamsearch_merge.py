@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 import subprocess
 from string import Template
 
-LIMIT=50
-BUDGET=5
-BEAM=5
+LIMIT=10
+BUDGET=3
+BEAM=3
 TEMPERATURE=0.8
 DISTANCE=0.15
 load_dotenv(dotenv_path='../experiments_config.env')
@@ -33,7 +33,7 @@ system_prompt = os.getenv("SYSTEM_PROMPT", "")
 
 # task dependent
 def assert_end(text):
-    return True if "The answer is" in text and text.endswith(tokenizer.eos_token) else False
+    return True if "The answer is" in text and any(char.isdigit() for char in text.split("The answer is")[-1][:20]) else False
 
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
@@ -75,7 +75,7 @@ def call_policy(question, path):
     model = policy_fpath
     query = wrap_query_for_policy(question, path)
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
-            "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
+            "stop": ["\n\n", "<|end_of_text|>", "Question:", "Answer:"], "include_stop_str_in_output": True, "skip_special_tokens": False}
     response =requests.post(url, json=pload)
     response_json = response.json()
     choice = response_json["choices"][0]
@@ -130,7 +130,21 @@ class Node:
         return self.parent.return_path() + [self.content]
 
     def print_path(self):
-        return "".join(self.return_path())
+        path_steps = self.return_path()
+        # Limit path length to prevent API errors
+        max_path_length = 2000  # Leave room for question and response
+        if len(path_steps) > 10:  # If more than 10 steps, truncate
+            # Keep first 2 steps and last 8 steps to maintain context
+            path_steps = path_steps[:2] + path_steps[-8:]
+        
+        # Join with newlines for better readability
+        path_text = "\n".join(path_steps)
+        
+        # Truncate if still too long
+        if len(path_text) > max_path_length:
+            path_text = path_text[:max_path_length] + "..."
+            
+        return path_text
 
 class VirtualNode:
     def __init__(self, nodes, parent=None):

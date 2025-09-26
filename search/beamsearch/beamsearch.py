@@ -11,7 +11,7 @@ import subprocess
 from string import Template
 
 LIMIT=50
-BUDGET=5
+BUDGET=5    
 BEAM=5
 TEMPERATURE=0.8
 load_dotenv(dotenv_path='../experiments_config.env')
@@ -32,7 +32,7 @@ system_prompt = os.getenv("SYSTEM_PROMPT", "")
 
 # task dependent
 def assert_end(text):
-    return True if "The answer is" in text else False
+    return True if "The answer is" in text and any(char.isdigit() for char in text.split("The answer is")[-1][:20]) else False
 
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(policy_fpath)
@@ -74,7 +74,7 @@ def call_policy(question, path):
     model = policy_fpath
     query = wrap_query_for_policy(question, path)
     pload ={"prompt": query, "model": model, "temperature": TEMPERATURE, "max_tokens": 512, 
-            "stop": ["\n"], "include_stop_str_in_output": True, "skip_special_tokens": False}
+            "stop": ["\n\n", "<|end_of_text|>", "Question:", "Answer:"], "include_stop_str_in_output": True, "skip_special_tokens": False}
     response =requests.post(url, json=pload)
     response_json = response.json()
     choice = response_json["choices"][0]

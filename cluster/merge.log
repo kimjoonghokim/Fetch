@@ -1,7 +1,6 @@
-/usr/local/lib/python3.11/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
-  import pynvml  # type: ignore[import]
-INFO:     Started server process [28850]
+INFO:     Started server process [44365]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0INFO:     127.0.0.1:49600 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49600 - "GET /openapi.json HTTP/1.1" 200 OK
+ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8003): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
